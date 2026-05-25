@@ -1,33 +1,64 @@
-This is a [Plasmo extension](https://docs.plasmo.com/) project bootstrapped with [`plasmo init`](https://www.npmjs.com/package/plasmo).
+# Capsule 💊
 
-## Getting Started
+Capsule is a smart local file manager built as a Chrome Extension. It allows you to organize files on your computer into customizable categories that map directly to physical subfolders, all through a convenient browser interface.
 
-First, run the development server:
+## 🚀 Features
 
-```bash
-pnpm dev
-# or
-npm run dev
-```
+- **Local File System Access:** Securely connect to any folder on your machine using the File System Access API.
+- **Physical Organization:** Creating a category in the extension creates a real folder on your disk.
+- **Smart Drag & Drop:** Effortlessly move files from your OS into specific categories.
+- **Persistent Handles:** Remembers your root storage folder across browser sessions.
+- **Dual View Modes:** Toggle between a persistent **Side Panel** for heavy work and a **Popup** for quick access.
+- **File Management:** List and delete files directly from the browser.
 
-Open your browser and load the appropriate development build. For example, if you are developing for the chrome browser, using manifest v3, use: `build/chrome-mv3-dev`.
+## 🛠️ Tech Stack
 
-You can start editing the popup by modifying `popup.tsx`. It should auto-update as you make changes. To add an options page, simply add a `options.tsx` file to the root of the project, with a react component default exported. Likewise to add a content page, add a `content.ts` file to the root of the project, importing some module and do some logic, then reload the extension on your browser.
+- [Plasmo](https://www.plasmo.com/) - The Browser Extension Framework
+- [React](https://reactjs.org/) - UI Library
+- [Tailwind CSS](https://tailwindcss.com/) - Styling
+- [TypeScript](https://www.typescriptlang.org/) - Type Safety
+- [IndexedDB (idb-keyval)](https://github.com/jakearchibald/idb-keyval) - Persistent File Handles
 
-For further guidance, [visit our Documentation](https://docs.plasmo.com/)
+## 📦 Installation & Setup
 
-## Making production build
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/mayank543/Capsule.git
+   cd Capsule
+   ```
 
-Run the following:
+2. **Install dependencies:**
+   ```bash
+   npm install
+   ```
 
-```bash
-pnpm build
-# or
-npm run build
-```
+3. **Start the development server:**
+   ```bash
+   npm run dev
+   ```
 
-This should create a production bundle for your extension, ready to be zipped and published to the stores.
+4. **Load into Chrome:**
+   - Open Chrome and go to `chrome://extensions`.
+   - Enable **Developer mode** (top right).
+   - Click **Load unpacked**.
+   - Select the `build/chrome-mv3-dev` folder in your project directory.
 
-## Submit to the webstores
+## 📖 Usage
 
-The easiest way to deploy your Plasmo extension is to use the built-in [bpp](https://bpp.browser.market) GitHub action. Prior to using this action however, make sure to build your extension and upload the first version to the store to establish the basic credentials. Then, simply follow [this setup instruction](https://docs.plasmo.com/framework/workflows/submit) and you should be on your way for automated submission!
+1. Click the Capsule icon to open the **Side Panel** (or Popup, depending on your setting).
+2. For the first-time setup, go to the **Options page** (Right-click icon -> Options) to select your **Root Storage Folder**.
+3. Grant the "View and edit files" permission when prompted by Chrome.
+4. Create categories (e.g., "Resumes", "PPTs") and drag your files in!
+
+---
+
+## 🚧 Work in Progress
+
+This project is actively being developed. Current focus areas:
+- [ ] Nested categories (Sub-folders).
+- [ ] Search functionality within the vault.
+- [ ] File previewing for common formats.
+- [ ] Manual notes and descriptions for individual files.
+- [ ] Version history tracking.
+
+*Note: This is an experimental tool using modern browser APIs. Always keep backups of your important files.*
