@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from "react"
 import { getStoredRootDirectory, pickRootDirectory, listDirectoryContents, getOrCreateSubdirectory, saveFileToDirectory, type FileSystemItem, verifyPermission } from "./file-system"
-import { getCategories, addCategory, saveCategories, updateCategory, type Category, saveFileMetadata, getFileMetadata, type FileMetadata } from "./metadata"
+import { getCategories, addCategory, saveCategories, updateCategory, removeCategory, type Category, saveFileMetadata, getFileMetadata, type FileMetadata } from "./metadata"
 import { Storage } from "@plasmohq/storage"
 import { get } from "idb-keyval"
 import React from "react"
@@ -162,6 +162,19 @@ export const FileVault = ({ isSidePanel = false }: { isSidePanel?: boolean }) =>
     }
   }
 
+  const handleDeleteCategory = async (category: Category, e: React.MouseEvent) => {
+    e.stopPropagation()
+    const warning = `Warning: Deleting the folder "${category.name}" will also remove all its sub-folders from Capsule. Files on your computer will not be deleted, but they will disappear from this view. Proceed?`
+    if (confirm(warning)) {
+      await removeCategory(category.id)
+      const updatedCats = await getCategories()
+      setCategories(updatedCats)
+      if (selectedCategory?.path.startsWith(category.path)) {
+        setSelectedCategory(null)
+      }
+    }
+  }
+
   const handleAddNote = async (fileName: string) => {
     if (!selectedCategory) return
     const key = `${selectedCategory.path}/${fileName}`
@@ -241,7 +254,7 @@ export const FileVault = ({ isSidePanel = false }: { isSidePanel?: boolean }) =>
         <div key={node.path} className="plasmo-flex plasmo-flex-col">
           <div 
             onClick={() => setSelectedCategory(node)} 
-            className={`plasmo-flex plasmo-items-center plasmo-py-1.5 plasmo-px-3 plasmo-cursor-pointer plasmo-transition-colors ${isSelected ? 'plasmo-bg-slate-100 plasmo-text-slate-900' : 'plasmo-text-slate-500 hover:plasmo-bg-slate-50'}`} 
+            className={`plasmo-flex plasmo-items-center plasmo-py-1.5 plasmo-px-3 plasmo-cursor-pointer plasmo-transition-colors plasmo-group ${isSelected ? 'plasmo-bg-slate-100 plasmo-text-slate-900' : 'plasmo-text-slate-500 hover:plasmo-bg-slate-50'}`} 
             style={{ paddingLeft: `${depth * 12 + 12}px` }}
           >
             <div 
@@ -255,7 +268,13 @@ export const FileVault = ({ isSidePanel = false }: { isSidePanel?: boolean }) =>
             <svg className={`plasmo-w-4 plasmo-h-4 plasmo-mr-2 plasmo-shrink-0 ${isSelected ? 'plasmo-text-slate-600' : 'plasmo-text-slate-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
             </svg>
-            <span className="plasmo-text-[12px] plasmo-font-normal plasmo-truncate">{node.name}</span>
+            <span className="plasmo-text-[12px] plasmo-font-normal plasmo-truncate plasmo-flex-1">{node.name}</span>
+            <button 
+              onClick={(e) => handleDeleteCategory(node, e)}
+              className="plasmo-opacity-0 group-hover:plasmo-opacity-100 plasmo-p-1 plasmo-text-slate-300 hover:plasmo-text-red-400 plasmo-transition-all"
+            >
+               <TrashIcon size={10} />
+            </button>
           </div>
           {isExpanded && hasChildren && renderTree(node.children, depth + 1)}
         </div>

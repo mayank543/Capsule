@@ -69,6 +69,15 @@ export async function saveFileMetadata(
 
 export async function removeCategory(categoryId: string): Promise<void> {
   const categories = await getCategories()
-  const filtered = categories.filter((c) => c.id !== categoryId)
+  const targetCategory = categories.find(c => c.id === categoryId)
+  if (!targetCategory) return
+
+  // Remove the category itself and all categories that start with its path
+  const filtered = categories.filter((c) => {
+    const isSame = c.id === categoryId
+    const isChild = c.path.startsWith(targetCategory.path + "/")
+    return !isSame && !isChild
+  })
+  
   await saveCategories(filtered)
 }
