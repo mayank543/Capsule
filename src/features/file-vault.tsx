@@ -1,8 +1,9 @@
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useMemo } from "react"
 import { getStoredRootDirectory, pickRootDirectory, listDirectoryContents, getOrCreateSubdirectory, saveFileToDirectory, type FileSystemItem, verifyPermission } from "./file-system"
-import { getCategories, addCategory, saveCategories, type Category, saveFileMetadata } from "./metadata"
+import { getCategories, addCategory, saveCategories, updateCategory, type Category, saveFileMetadata, getFileMetadata, type FileMetadata } from "./metadata"
 import { Storage } from "@plasmohq/storage"
 import { get } from "idb-keyval"
+import React from "react"
 
 const storage = new Storage()
 const ROOT_HANDLE_KEY = "root-directory-handle"
@@ -12,98 +13,81 @@ export const FileVault = ({ isSidePanel = false }: { isSidePanel?: boolean }) =>
   const [categories, setCategories] = useState<Category[]>([])
   const [selectedCategory, setSelectedCategory] = useState<Category | null>(null)
   const [files, setFiles] = useState<FileSystemItem[]>([])
+  const [fileMetadata, setFileMetadata] = useState<Record<string, FileMetadata>>({})
   const [loading, setLoading] = useState(true)
   const [isDragging, setIsDragging] = useState(false)
   const [viewMode, setViewMode] = useState<string>("sidepanel")
   const [permissionRequired, setPermissionRequired] = useState(false)
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
 
   const syncPhysicalFolders = useCallback(async (handle: FileSystemDirectoryHandle, currentCats: Category[]) => {
     try {
-      console.log("[SYNC] Starting physical folder sync...")
-      const contents = await listDirectoryContents(handle)
-      console.log("[SYNC] Found contents:", contents.length, "items")
-      
-      const physicalDirs = contents.filter(item => item.kind === "directory")
-      console.log("[SYNC] Physical directories discovered:", physicalDirs.map(d => d.name))
-      
-      let updated = false
       const updatedCats = [...currentCats]
-      
-      for (const dir of physicalDirs) {
-        const exists = updatedCats.find(c => c.path.toLowerCase() === dir.name.toLowerCase())
-        if (!exists) {
-          console.log(`[SYNC] New category discovered: ${dir.name}`)
-          updatedCats.push({
-            id: Date.now().toString() + Math.random(),
-            name: dir.name.split(/[-_]/).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' '),
-            path: dir.name
-          })
-          updated = true
-        } else {
-          console.log(`[SYNC] Folder already in categories: ${dir.name}`)
+      let updated = false
+      const scanRecursive = async (dirHandle: FileSystemDirectoryHandle, currentPath = "", depth = 0) => {
+        if (depth > 5) return
+        const contents = await listDirectoryContents(dirHandle)
+        const dirs = contents.filter(item => item.kind === "directory")
+        for (const dir of dirs) {
+          const relPath = currentPath ? `${currentPath}/${dir.name}` : dir.name
+          const exists = updatedCats.find(c => c.path === relPath)
+          if (!exists) {
+            updatedCats.push({
+              id: Math.random().toString(36).substr(2, 9),
+              name: dir.name.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' '),
+              path: relPath
+            })
+            updated = true
+          }
+          await scanRecursive(dir.handle as FileSystemDirectoryHandle, relPath, depth + 1)
         }
       }
-      
+      await scanRecursive(handle)
       if (updated) {
-        console.log("[SYNC] Updating storage with discovered categories...")
         await saveCategories(updatedCats)
         setCategories(updatedCats)
         return updatedCats
-      } else {
-        console.log("[SYNC] No new categories to add.")
       }
     } catch (error) {
-      console.error("[SYNC] Error during sync:", error)
+      console.error("[SYNC] Sync error:", error)
     }
     return currentCats
   }, [])
 
   const init = useCallback(async () => {
-    console.log("[INIT] Starting initialization...")
+    setLoading(false) // Start with loading false if we have nothing to do
     setLoading(true)
     try {
       const mode = await storage.get("view-mode")
       if (mode) setViewMode(mode as string)
-
+      const meta = await getFileMetadata()
+      setFileMetadata(meta)
       const handle = await getStoredRootDirectory()
       if (handle) {
-        console.log("[INIT] Stored handle valid, setting root handle...")
         setRootHandle(handle)
         setPermissionRequired(false)
         let cats = await getCategories()
-        console.log("[INIT] Categories from storage:", cats)
         cats = await syncPhysicalFolders(handle, cats)
         setCategories(cats)
-        if (cats.length > 0 && !selectedCategory) {
-          console.log("[INIT] Selecting first category:", cats[0].name)
-          setSelectedCategory(cats[0])
-        }
+        if (cats.length > 0 && !selectedCategory) setSelectedCategory(cats[0])
       } else {
-        console.log("[INIT] No stored handle or permission missing.")
         const storedHandle = await get<FileSystemDirectoryHandle>(ROOT_HANDLE_KEY)
-        if (storedHandle) {
-          console.log("[INIT] Handle exists in IDB but needs permission.")
-          setPermissionRequired(true)
-        }
+        if (storedHandle) setPermissionRequired(true)
       }
     } catch (err) {
-      console.error("[INIT] Error during init:", err)
+      console.error("[INIT] Init error:", err)
     } finally {
       setLoading(false)
     }
   }, [selectedCategory, syncPhysicalFolders])
 
-  useEffect(() => {
-    init()
-  }, [])
+  useEffect(() => { init() }, [])
 
   const handleVerifyPermission = async () => {
-    console.log("[UI] Verifying permission...")
     const storedHandle = await get<FileSystemDirectoryHandle>(ROOT_HANDLE_KEY)
     if (storedHandle) {
       const granted = await verifyPermission(storedHandle)
       if (granted) {
-        console.log("[UI] Permission granted, re-initializing...")
         setRootHandle(storedHandle)
         setPermissionRequired(false)
         init()
@@ -117,8 +101,25 @@ export const FileVault = ({ isSidePanel = false }: { isSidePanel?: boolean }) =>
     setViewMode(newMode)
   }
 
+  const handleToggleVersionMode = async () => {
+    if (!selectedCategory) return
+    const newState = !selectedCategory.isVersioned
+    await updateCategory(selectedCategory.id, { isVersioned: newState })
+    const updatedCats = await getCategories()
+    setCategories(updatedCats)
+    setSelectedCategory({ ...selectedCategory, isVersioned: newState })
+  }
+
+  const handleToggleAutoRename = async () => {
+    if (!selectedCategory) return
+    const newState = !selectedCategory.autoRename
+    await updateCategory(selectedCategory.id, { autoRename: newState })
+    const updatedCats = await getCategories()
+    setCategories(updatedCats)
+    setSelectedCategory({ ...selectedCategory, autoRename: newState })
+  }
+
   const handleSelectRoot = async () => {
-    console.log("[UI] Selecting new root...")
     const handle = await pickRootDirectory()
     if (handle) {
       setRootHandle(handle)
@@ -132,50 +133,70 @@ export const FileVault = ({ isSidePanel = false }: { isSidePanel?: boolean }) =>
 
   const loadFiles = useCallback(async (category: Category) => {
     if (!rootHandle) return
-    console.log("[UI] Loading files for category:", category.name)
     try {
       const catHandle = await getOrCreateSubdirectory(rootHandle, category.path)
       const contents = await listDirectoryContents(catHandle)
-      setFiles(contents.filter(f => f.kind === "file"))
+      const sorted = contents
+        .filter(f => f.kind === "file")
+        .sort((a, b) => (b.lastModified || 0) - (a.lastModified || 0))
+      setFiles(sorted)
     } catch (error) {
       console.error("[UI] Error loading files:", error)
     }
   }, [rootHandle])
 
   useEffect(() => {
-    if (rootHandle && selectedCategory) {
-      loadFiles(selectedCategory)
-    }
+    if (rootHandle && selectedCategory) { loadFiles(selectedCategory) }
   }, [rootHandle, selectedCategory, loadFiles])
 
   const handleAddCategory = async () => {
     const name = prompt("Category name:")
     if (name) {
-      const id = Date.now().toString()
-      const newCat: Category = { id, name, path: name.toLowerCase().replace(/\s+/g, "-") }
+      const pathPrefix = selectedCategory ? `${selectedCategory.path}/` : ""
+      const fullPath = `${pathPrefix}${name.toLowerCase().replace(/\s+/g, "-")}`
+      const newCat: Category = { id: Date.now().toString(), name, path: fullPath }
       await addCategory(newCat)
       setCategories([...categories, newCat])
-      if (!selectedCategory) setSelectedCategory(newCat)
-      if (rootHandle) await getOrCreateSubdirectory(rootHandle, newCat.path)
+      setSelectedCategory(newCat)
+      if (rootHandle) await getOrCreateSubdirectory(rootHandle, fullPath)
     }
   }
 
-  const handleDrop = async (e: React.DragEvent) => {
+  const handleAddNote = async (fileName: string) => {
+    if (!selectedCategory) return
+    const key = `${selectedCategory.path}/${fileName}`
+    const note = prompt("Add note for this version:", fileMetadata[key]?.notes || "")
+    if (note !== null) {
+      await saveFileMetadata(fileName, selectedCategory.path, note)
+      const meta = await getFileMetadata()
+      setFileMetadata(meta)
+    }
+  }
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault()
     setIsDragging(false)
     if (!selectedCategory || !rootHandle) return
-
     const droppedFiles = Array.from(e.dataTransfer.files)
     if (droppedFiles.length === 0) return
-
-    console.log("[UI] Files dropped:", droppedFiles.length)
     const catHandle = await getOrCreateSubdirectory(rootHandle, selectedCategory.path)
+    const existingItems = await listDirectoryContents(catHandle)
+    let versionCount = existingItems.filter(i => i.kind === "file").length
     for (const file of droppedFiles) {
-      await saveFileToDirectory(catHandle, file)
-      await saveFileMetadata(file.name, selectedCategory.path, "")
+        let finalFileName = file.name
+        if (selectedCategory.autoRename) {
+            versionCount++
+            const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+            const pathPart = selectedCategory.path.replace(/\//g, '-')
+            const ext = file.name.split('.').pop()
+            const originalName = file.name.substring(0, file.name.lastIndexOf('.')).replace(/\s+/g, '-')
+            finalFileName = `${pathPart}-${originalName}-v${versionCount}-${dateStr}.${ext}`
+        }
+        await saveFileToDirectory(catHandle, file, finalFileName)
+        await saveFileMetadata(finalFileName, selectedCategory.path, "")
     }
     loadFiles(selectedCategory)
-  }
+  }, [rootHandle, selectedCategory, loadFiles])
 
   const handleDeleteFile = async (fileName: string) => {
     if (!selectedCategory || !rootHandle) return
@@ -184,167 +205,307 @@ export const FileVault = ({ isSidePanel = false }: { isSidePanel?: boolean }) =>
         const catHandle = await getOrCreateSubdirectory(rootHandle, selectedCategory.path)
         await (catHandle as any).removeEntry(fileName)
         loadFiles(selectedCategory)
-      } catch (err) {
-        console.error("[UI] Delete error", err)
-      }
+      } catch (err) { console.error("[UI] Delete error", err) }
     }
   }
 
-  if (loading) return <div className="plasmo-p-4">Loading...</div>
-
-  if (permissionRequired) {
-    return (
-      <div className={`plasmo-p-8 plasmo-flex plasmo-flex-col plasmo-items-center plasmo-justify-center plasmo-space-y-4 ${isSidePanel ? 'plasmo-w-full' : 'plasmo-w-[400px]'}`}>
-        <h1 className="plasmo-text-xl plasmo-font-bold">Access Required</h1>
-        <p className="plasmo-text-center plasmo-text-gray-600 plasmo-text-sm">Capsule needs your permission to access the folder you selected earlier.</p>
-        <button 
-          onClick={handleVerifyPermission}
-          className="plasmo-bg-blue-600 plasmo-text-white plasmo-px-4 plasmo-py-2 plasmo-rounded hover:plasmo-bg-blue-700"
-        >
-          Verify Access
-        </button>
-      </div>
-    )
+  const toggleExpand = (path: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    const next = new Set(expandedPaths)
+    if (next.has(path)) next.delete(path)
+    else next.add(path)
+    setExpandedPaths(next)
   }
 
-  if (!rootHandle) {
-    return (
-      <div className={`plasmo-p-8 plasmo-flex plasmo-flex-col plasmo-items-center plasmo-justify-center plasmo-space-y-4 ${isSidePanel ? 'plasmo-w-full' : 'plasmo-w-[400px]'}`}>
-        <h1 className="plasmo-text-xl plasmo-font-bold plasmo-text-center">Welcome to Capsule</h1>
-        <p className="plasmo-text-center plasmo-text-gray-600 plasmo-text-sm">Please select a folder on your system to use as your root storage.</p>
-        <button 
-          onClick={handleSelectRoot}
-          className="plasmo-bg-blue-600 plasmo-text-white plasmo-px-4 plasmo-py-2 plasmo-rounded hover:plasmo-bg-blue-700 plasmo-transition"
-        >
-          Select Root Folder
-        </button>
-      </div>
-    )
+  const categoryTree = useMemo(() => {
+    const tree: any[] = []
+    const sorted = [...categories].sort((a, b) => a.path.split('/').length - b.path.split('/').length)
+    const nodes: Record<string, any> = {}
+    sorted.forEach(cat => {
+      const parts = cat.path.split('/')
+      const parentPath = parts.slice(0, -1).join('/')
+      const node = { ...cat, children: [] }
+      nodes[cat.path] = node
+      if (parentPath && nodes[parentPath]) nodes[parentPath].children.push(node)
+      else tree.push(node)
+    })
+    return tree
+  }, [categories])
+
+  const renderTree = (nodes: any[], depth = 0) => {
+    return nodes.map(node => {
+      const isExpanded = expandedPaths.has(node.path)
+      const isSelected = selectedCategory?.path === node.path
+      const hasChildren = node.children.length > 0
+      return (
+        <div key={node.path} className="plasmo-flex plasmo-flex-col">
+          <div 
+            onClick={() => setSelectedCategory(node)} 
+            className={`plasmo-flex plasmo-items-center plasmo-py-1.5 plasmo-px-3 plasmo-cursor-pointer plasmo-transition-colors ${isSelected ? 'plasmo-bg-slate-100 plasmo-text-slate-900' : 'plasmo-text-slate-500 hover:plasmo-bg-slate-50'}`} 
+            style={{ paddingLeft: `${depth * 12 + 12}px` }}
+          >
+            <div 
+              onClick={(e) => toggleExpand(node.path, e)} 
+              className={`plasmo-w-4 plasmo-h-4 plasmo-flex plasmo-items-center plasmo-justify-center plasmo-mr-1 ${!hasChildren && 'plasmo-invisible'}`}
+            >
+              <svg className={`plasmo-w-2.5 plasmo-h-2.5 plasmo-transition-transform ${isExpanded ? 'plasmo-rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </div>
+            <svg className={`plasmo-w-4 plasmo-h-4 plasmo-mr-2 plasmo-shrink-0 ${isSelected ? 'plasmo-text-slate-600' : 'plasmo-text-slate-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+            </svg>
+            <span className="plasmo-text-[12px] plasmo-font-normal plasmo-truncate">{node.name}</span>
+          </div>
+          {isExpanded && hasChildren && renderTree(node.children, depth + 1)}
+        </div>
+      )
+    })
   }
+
+  if (loading) return (
+    <div className="plasmo-h-full plasmo-w-full plasmo-flex plasmo-items-center plasmo-justify-center plasmo-bg-white">
+      <div className="plasmo-flex plasmo-flex-col plasmo-items-center">
+        <CapsuleLogo className="plasmo-w-8 plasmo-h-8 plasmo-text-slate-200 plasmo-animate-pulse" />
+        <span className="plasmo-mt-3 plasmo-text-slate-400 plasmo-text-[10px] plasmo-uppercase plasmo-tracking-widest">Loading</span>
+      </div>
+    </div>
+  )
+
+  if (!rootHandle) return (
+    <div className="plasmo-h-full plasmo-w-full plasmo-flex plasmo-flex-col plasmo-items-center plasmo-justify-center plasmo-bg-white plasmo-p-12">
+        <div className="plasmo-p-6 plasmo-rounded-full plasmo-bg-slate-50 plasmo-mb-8">
+            <CapsuleLogo className="plasmo-w-12 plasmo-h-12 plasmo-text-slate-300" />
+        </div>
+        <h2 className="plasmo-text-slate-900 plasmo-font-semibold plasmo-text-lg plasmo-mb-2">Initialize Your Vault</h2>
+        <p className="plasmo-text-slate-500 plasmo-text-sm plasmo-text-center plasmo-max-w-[280px] plasmo-mb-8">Select a local directory to securely store and manage your project files.</p>
+        <button 
+            onClick={handleSelectRoot} 
+            className="plasmo-bg-white plasmo-text-slate-900 plasmo-border plasmo-border-slate-200 plasmo-px-6 plasmo-py-2.5 plasmo-rounded-lg plasmo-text-sm plasmo-font-medium hover:plasmo-bg-slate-50 hover:plasmo-border-slate-300 plasmo-transition-all"
+        >
+            Select Storage Folder
+        </button>
+    </div>
+  )
+
+  const breadcrumbs = selectedCategory?.path.split('/') || []
 
   return (
-    <div className={`plasmo-flex plasmo-flex-col plasmo-bg-gray-50 plasmo-overflow-hidden ${isSidePanel ? 'plasmo-w-full plasmo-h-screen' : 'plasmo-w-[500px] plasmo-h-[600px]'}`}>
-      <div className="plasmo-p-4 plasmo-bg-white plasmo-border-b plasmo-flex plasmo-justify-between plasmo-items-center shrink-0">
-        <div className="plasmo-flex plasmo-items-center plasmo-space-x-3">
-          <h2 className="plasmo-font-bold plasmo-text-lg">Capsule</h2>
-          <button 
-            onClick={handleToggleViewMode}
-            className="plasmo-text-[10px] plasmo-bg-gray-100 plasmo-text-gray-500 plasmo-px-2 plasmo-py-0.5 plasmo-rounded-md hover:plasmo-bg-gray-200 plasmo-transition plasmo-uppercase plasmo-font-bold"
-            title="Toggle between Popup and Side Panel"
-          >
-            {viewMode === "sidepanel" ? "Side Panel" : "Popup"}
-          </button>
-          <button 
-            onClick={() => syncPhysicalFolders(rootHandle!, categories)}
-            className="plasmo-text-[10px] plasmo-bg-blue-50 plasmo-text-blue-500 plasmo-px-2 plasmo-py-0.5 plasmo-rounded-md hover:plasmo-bg-blue-100 plasmo-transition plasmo-uppercase plasmo-font-bold"
-            title="Sync folders from disk"
-          >
-            Sync
-          </button>
+    <div className="plasmo-flex plasmo-flex-col plasmo-bg-white plasmo-overflow-hidden" style={isSidePanel ? { height: '100vh', width: '100%' } : { height: '600px', width: '800px' }}>
+      {/* Clean Minimalism Header */}
+      <div className="plasmo-px-5 plasmo-py-3.5 plasmo-bg-white plasmo-border-b plasmo-border-slate-100 plasmo-flex plasmo-justify-between plasmo-items-center plasmo-shrink-0">
+        <div className="plasmo-flex plasmo-items-center plasmo-space-x-5">
+            <div className="plasmo-flex plasmo-items-center plasmo-space-x-2.5">
+                <CapsuleLogo className="plasmo-w-5 plasmo-h-5 plasmo-text-slate-800" />
+                <span className="plasmo-text-slate-900 plasmo-font-semibold plasmo-tracking-tight plasmo-text-[15px]">Capsule</span>
+            </div>
+            <div className="plasmo-h-4 plasmo-w-[1px] plasmo-bg-slate-200"></div>
+            <div className="plasmo-flex plasmo-space-x-1">
+                <button 
+                  onClick={handleToggleViewMode} 
+                  className="plasmo-text-[10px] plasmo-text-slate-400 plasmo-px-2.5 plasmo-py-1 plasmo-rounded-md hover:plasmo-bg-slate-50 hover:plasmo-text-slate-600 plasmo-uppercase plasmo-tracking-wider plasmo-transition-colors"
+                >
+                  {viewMode}
+                </button>
+                <button 
+                  onClick={() => syncPhysicalFolders(rootHandle!, categories)} 
+                  className="plasmo-text-[10px] plasmo-text-slate-400 plasmo-px-2.5 plasmo-py-1 plasmo-rounded-md hover:plasmo-bg-slate-50 hover:plasmo-text-slate-600 plasmo-uppercase plasmo-tracking-wider plasmo-transition-colors"
+                >
+                  Sync
+                </button>
+            </div>
         </div>
-        <button 
-          onClick={handleAddCategory}
-          className="plasmo-text-sm plasmo-bg-blue-50 plasmo-text-blue-600 plasmo-px-3 plasmo-py-1 plasmo-rounded-full plasmo-font-medium hover:plasmo-bg-blue-100"
-        >
-          + Add Category
-        </button>
+        <div className="plasmo-flex plasmo-items-center plasmo-space-x-3">
+            {selectedCategory && (
+                <div className="plasmo-flex plasmo-bg-slate-50 plasmo-p-0.5 plasmo-rounded-lg plasmo-border plasmo-border-slate-100">
+                    <button 
+                      onClick={handleToggleAutoRename} 
+                      className={`plasmo-text-[9px] plasmo-px-2.5 plasmo-py-1 plasmo-rounded-md plasmo-font-semibold plasmo-uppercase plasmo-tracking-wider plasmo-transition-all ${selectedCategory.autoRename ? 'plasmo-bg-white plasmo-shadow-sm plasmo-text-slate-900' : 'plasmo-text-slate-400 hover:plasmo-text-slate-600'}`}
+                    >
+                      Rename
+                    </button>
+                    <button 
+                      onClick={handleToggleVersionMode} 
+                      className={`plasmo-text-[9px] plasmo-px-2.5 plasmo-py-1 plasmo-rounded-md plasmo-font-semibold plasmo-uppercase plasmo-tracking-wider plasmo-transition-all ${selectedCategory.isVersioned ? 'plasmo-bg-white plasmo-shadow-sm plasmo-text-slate-900' : 'plasmo-text-slate-400 hover:plasmo-text-slate-600'}`}
+                    >
+                      Version
+                    </button>
+                </div>
+            )}
+            <button 
+              onClick={handleAddCategory} 
+              className="plasmo-bg-white plasmo-text-slate-900 plasmo-border plasmo-border-slate-200 plasmo-px-3.5 plasmo-py-1.5 plasmo-rounded-lg plasmo-font-medium plasmo-text-[11px] hover:plasmo-bg-slate-50 hover:plasmo-border-slate-300 plasmo-transition-all"
+            >
+              + New Folder
+            </button>
+        </div>
       </div>
 
       <div className="plasmo-flex plasmo-flex-1 plasmo-overflow-hidden">
-        <div className="plasmo-w-1/3 plasmo-border-r plasmo-bg-gray-50 plasmo-overflow-y-auto shrink-0">
-          <div className="plasmo-p-2 space-y-1">
-            {categories.map(cat => (
-              <button
-                key={cat.id}
-                onClick={() => setSelectedCategory(cat)}
-                className={`plasmo-w-full plasmo-text-left plasmo-p-3 plasmo-text-sm plasmo-rounded-lg plasmo-transition ${selectedCategory?.id === cat.id ? "plasmo-bg-white plasmo-shadow-sm plasmo-font-bold plasmo-text-blue-600 plasmo-ring-1 plasmo-ring-gray-200" : "hover:plasmo-bg-gray-200 text-gray-600"}`}
-              >
-                {cat.name}
-              </button>
-            ))}
-          </div>
-          {categories.length === 0 && (
-            <div className="plasmo-p-4 plasmo-text-xs plasmo-text-gray-500 plasmo-italic plasmo-text-center">No categories yet.</div>
-          )}
+        {/* Minimal Sidebar */}
+        <div className="plasmo-w-[220px] plasmo-bg-slate-50/50 plasmo-border-r plasmo-border-slate-100 plasmo-overflow-y-auto plasmo-shrink-0 plasmo-py-4">
+            <div className="plasmo-px-4 plasmo-mb-4">
+                <span className="plasmo-text-[10px] plasmo-font-bold plasmo-text-slate-400 plasmo-uppercase plasmo-tracking-widest">Workspace</span>
+            </div>
+            {renderTree(categoryTree)}
+            {categories.length === 0 && (
+                <div className="plasmo-px-4 plasmo-py-2">
+                    <div className="plasmo-rounded-lg plasmo-border plasmo-border-dashed plasmo-border-slate-200 plasmo-p-4 plasmo-text-center">
+                        <p className="plasmo-text-[11px] plasmo-text-slate-400">No folders yet.</p>
+                    </div>
+                </div>
+            )}
         </div>
 
+        {/* Workspace */}
         <div 
-          className={`plasmo-flex-1 plasmo-flex plasmo-flex-col plasmo-relative ${isDragging ? "plasmo-bg-blue-50" : "plasmo-bg-white"}`}
-          onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-          onDragLeave={() => setIsDragging(false)}
+          className={`plasmo-flex-1 plasmo-flex plasmo-flex-col plasmo-relative plasmo-transition-colors ${isDragging ? 'plasmo-bg-slate-50' : 'plasmo-bg-white'}`} 
+          onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }} 
+          onDragLeave={() => setIsDragging(false)} 
           onDrop={handleDrop}
         >
-          {!selectedCategory ? (
-            <div className="plasmo-flex-1 plasmo-flex plasmo-flex-col plasmo-items-center plasmo-justify-center plasmo-text-gray-400 plasmo-p-8 plasmo-text-center space-y-2">
-              <div className="plasmo-w-12 plasmo-h-12 plasmo-bg-gray-100 plasmo-rounded-full plasmo-flex plasmo-items-center plasmo-justify-center plasmo-text-2xl">📁</div>
-              <p className="plasmo-text-sm">Select or create a category to view files.</p>
-            </div>
-          ) : (
-            <>
-              <div className="plasmo-p-3 plasmo-bg-gray-50 plasmo-border-b plasmo-flex plasmo-justify-between plasmo-items-center shrink-0">
-                <span className="plasmo-text-xs plasmo-font-bold plasmo-uppercase plasmo-tracking-wider plasmo-text-gray-500">{selectedCategory.name}</span>
-                <span className="plasmo-text-[10px] plasmo-bg-gray-200 plasmo-text-gray-600 plasmo-px-1.5 plasmo-py-0.5 plasmo-rounded plasmo-uppercase plasmo-font-bold">{files.length} files</span>
-              </div>
-              
-              <div className="plasmo-flex-1 plasmo-overflow-y-auto plasmo-p-2 space-y-1">
-                {files.map(file => (
-                  <div key={file.name} className="plasmo-flex plasmo-items-center plasmo-p-2.5 hover:plasmo-bg-blue-50/50 plasmo-rounded-lg plasmo-group plasmo-transition plasmo-cursor-default">
-                    <div className="plasmo-w-9 plasmo-h-9 plasmo-bg-gray-100 group-hover:plasmo-bg-blue-100 plasmo-rounded plasmo-flex plasmo-items-center plasmo-justify-center plasmo-mr-3 plasmo-transition shrink-0">
-                      <FileIcon name={file.name} />
-                    </div>
-                    <div className="plasmo-flex-1 plasmo-min-w-0">
-                      <p className="plasmo-text-sm plasmo-font-medium plasmo-text-gray-700 plasmo-truncate">{file.name}</p>
-                    </div>
-                    <button 
-                      onClick={() => handleDeleteFile(file.name)}
-                      className="plasmo-opacity-0 group-hover:plasmo-opacity-100 plasmo-p-1.5 plasmo-text-gray-400 hover:plasmo-text-red-600 plasmo-transition"
-                    >
-                      <TrashIcon />
-                    </button>
-                  </div>
+          <div className="plasmo-px-6 plasmo-py-3.5 plasmo-bg-white plasmo-border-b plasmo-border-slate-50 plasmo-flex plasmo-items-center plasmo-justify-between">
+            <div className="plasmo-flex plasmo-items-center plasmo-space-x-1.5">
+                <span className="plasmo-text-[11px] plasmo-font-medium plasmo-text-slate-400 plasmo-cursor-pointer hover:plasmo-text-slate-900" onClick={() => setSelectedCategory(null)}>Vault</span>
+                {breadcrumbs.map((crumb, i) => (
+                    <React.Fragment key={i}>
+                        <svg className="plasmo-w-3 plasmo-h-3 plasmo-text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                        </svg>
+                        <span 
+                          className={`plasmo-text-[11px] ${i === breadcrumbs.length - 1 ? 'plasmo-font-semibold plasmo-text-slate-900' : 'plasmo-text-slate-400 plasmo-cursor-pointer hover:plasmo-text-slate-900'}`} 
+                          onClick={() => setSelectedCategory(categories.find(c => c.path === breadcrumbs.slice(0, i+1).join('/')) || null)}
+                        >
+                          {crumb}
+                        </span>
+                    </React.Fragment>
                 ))}
-                {files.length === 0 && !isDragging && (
-                  <div className="h-full flex flex-col items-center justify-center text-gray-400 py-20 space-y-2">
-                    <div className="plasmo-text-3xl">📥</div>
-                    <p className="plasmo-text-sm">Drag and drop files here</p>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-
-          {isDragging && (
-            <div className="plasmo-absolute plasmo-inset-0 plasmo-bg-blue-500/10 plasmo-backdrop-blur-[1px] plasmo-border-4 plasmo-border-blue-500/50 plasmo-border-dashed plasmo-flex plasmo-items-center justify-center pointer-events-none z-10">
-              <div className="bg-white px-6 py-3 rounded-2xl shadow-xl font-bold text-blue-600 flex flex-col items-center space-y-2">
-                <span className="text-2xl">✨</span>
-                <span>Drop to store in {selectedCategory?.name}</span>
-              </div>
             </div>
-          )}
+            {selectedCategory && (
+                <div className="plasmo-flex plasmo-items-center plasmo-space-x-3">
+                    <span className="plasmo-text-[10px] plasmo-text-slate-400 plasmo-font-medium plasmo-uppercase plasmo-tracking-wider">{files.length} Items</span>
+                </div>
+            )}
+          </div>
+
+          <div className="plasmo-flex-1 plasmo-overflow-y-auto plasmo-p-8">
+            {!selectedCategory ? (
+                <div className="plasmo-h-full plasmo-flex plasmo-flex-col plasmo-items-center plasmo-justify-center">
+                    <div className="plasmo-p-8 plasmo-rounded-3xl plasmo-bg-slate-50/50 plasmo-mb-6">
+                        <CapsuleLogo className="plasmo-w-16 plasmo-h-16 plasmo-text-slate-200" />
+                    </div>
+                    <p className="plasmo-text-[11px] plasmo-font-semibold plasmo-text-slate-400 plasmo-uppercase plasmo-tracking-[0.2em]">Select a Workspace</p>
+                </div>
+            ) : (
+                <div className="plasmo-grid plasmo-grid-cols-4 sm:plasmo-grid-cols-5 md:plasmo-grid-cols-6 plasmo-gap-x-4 plasmo-gap-y-8">
+                    {files.map((file, index) => {
+                        const note = fileMetadata[`${selectedCategory.path}/${file.name}`]?.notes;
+                        const isLatest = index === 0 && selectedCategory.isVersioned;
+                        return (
+                            <div key={file.name} className="plasmo-relative plasmo-group">
+                                <div className={`plasmo-flex plasmo-flex-col plasmo-items-center plasmo-p-3 plasmo-rounded-xl plasmo-transition-all ${isLatest ? 'plasmo-bg-slate-50' : 'hover:plasmo-bg-slate-50/80'}`}>
+                                    <div className="plasmo-w-14 plasmo-h-14 plasmo-rounded-xl plasmo-flex plasmo-items-center plasmo-justify-center plasmo-mb-3 plasmo-bg-white plasmo-border plasmo-border-slate-100 plasmo-shadow-sm group-hover:plasmo-border-slate-200 plasmo-transition-all">
+                                        <FileIcon name={file.name} size="lg" />
+                                    </div>
+                                    <p className="plasmo-text-[11px] plasmo-font-medium plasmo-text-slate-700 plasmo-text-center plasmo-w-full plasmo-truncate plasmo-px-1" title={file.name}>
+                                        {file.name}
+                                    </p>
+                                    
+                                    {/* Minimal Action Overlay */}
+                                    <div className="plasmo-absolute plasmo-top-1 plasmo-right-1 plasmo-flex plasmo-flex-col plasmo-space-y-1 plasmo-opacity-0 group-hover:plasmo-opacity-100 plasmo-transition-opacity">
+                                        <button 
+                                          onClick={() => handleAddNote(file.name)} 
+                                          className="plasmo-p-1.5 plasmo-bg-white plasmo-rounded-md plasmo-shadow-sm plasmo-border plasmo-border-slate-100 plasmo-text-slate-400 hover:plasmo-text-slate-900 plasmo-transition-colors"
+                                        >
+                                          <svg className="plasmo-w-3 plasmo-h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                          </svg>
+                                        </button>
+                                        <button 
+                                          onClick={() => handleDeleteFile(file.name)} 
+                                          className="plasmo-p-1.5 plasmo-bg-white plasmo-rounded-md plasmo-shadow-sm plasmo-border plasmo-border-slate-100 plasmo-text-slate-400 hover:plasmo-text-red-500 plasmo-transition-colors"
+                                        >
+                                          <TrashIcon size={12} />
+                                        </button>
+                                    </div>
+
+                                    {note && (
+                                        <div className="plasmo-absolute plasmo-top-2 plasmo-left-2">
+                                            <div className="plasmo-relative plasmo-group/note">
+                                                <div className="plasmo-w-2 plasmo-h-2 plasmo-bg-slate-400 plasmo-rounded-full plasmo-ring-2 plasmo-ring-white"></div>
+                                                {/* Minimal Tooltip */}
+                                                <div className="plasmo-absolute plasmo-left-4 plasmo-top-0 plasmo-bg-white plasmo-text-slate-600 plasmo-text-[10px] plasmo-p-2.5 plasmo-rounded-lg plasmo-shadow-xl plasmo-w-40 plasmo-opacity-0 group-hover/note:plasmo-opacity-100 plasmo-transition-opacity plasmo-pointer-events-none plasmo-border plasmo-border-slate-100 plasmo-z-10">
+                                                    {note}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                    {isLatest && (
+                                        <div className="plasmo-mt-1.5">
+                                            <span className="plasmo-text-[8px] plasmo-bg-slate-100 plasmo-text-slate-600 plasmo-px-1.5 plasmo-py-0.5 plasmo-rounded-md plasmo-font-bold plasmo-uppercase plasmo-tracking-tighter">Current</span>
+                                        </div>
+                                    )}
+                                </div>
+                                {selectedCategory.isVersioned && index < files.length - 1 && (
+                                    <div className="plasmo-absolute plasmo--right-2 plasmo-top-7 plasmo-opacity-20">
+                                        <svg className="plasmo-w-3 plasmo-h-3 plasmo-text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                                        </svg>
+                                    </div>
+                                )}
+                            </div>
+                        )
+                    })}
+                </div>
+            )}
+          </div>
         </div>
       </div>
+      
+      {/* Drop Indicator */}
+      {isDragging && (
+          <div className="plasmo-absolute plasmo-inset-0 plasmo-bg-white/80 plasmo-backdrop-blur-[2px] plasmo-z-50 plasmo-flex plasmo-items-center plasmo-justify-center">
+              <div className="plasmo-p-12 plasmo-rounded-3xl plasmo-border-2 plasmo-border-dashed plasmo-border-slate-200 plasmo-flex plasmo-flex-col plasmo-items-center">
+                  <svg className="plasmo-w-12 plasmo-h-12 plasmo-text-slate-400 plasmo-mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                  </svg>
+                  <p className="plasmo-text-slate-900 plasmo-font-semibold">Drop files to add to {selectedCategory?.name}</p>
+              </div>
+          </div>
+      )}
     </div>
   )
 }
 
-const FileIcon = ({ name }: { name: string }) => {
+const CapsuleLogo = ({ className }: { className?: string }) => (
+  <svg viewBox="0 0 100 100" className={className} fill="none" stroke="currentColor" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M50 20L20 40V60L50 80L80 60V40L50 20Z" />
+    <circle cx="50" cy="50" r="10" strokeWidth="4" />
+  </svg>
+)
+
+const FileIcon = ({ name, size = "sm" }: { name: string, size?: "sm" | "lg" }) => {
   const ext = name.split('.').pop()?.toLowerCase()
-  const icons: Record<string, string> = {
-    pdf: 'PDF', doc: 'DOC', docx: 'DOC', ppt: 'PPT', pptx: 'PPT',
-    xls: 'XLS', xlsx: 'XLS', csv: 'CSV', zip: 'ZIP', rar: 'ZIP'
+  const icons: Record<string, string> = { 
+    pdf: 'PDF', doc: 'DOC', docx: 'DOC', ppt: 'PPT', pptx: 'PPT', 
+    xls: 'XLS', xlsx: 'XLS', csv: 'CSV', zip: 'ZIP', png: 'IMG', 
+    jpg: 'IMG', jpeg: 'IMG', svg: 'SVG', ts: 'TS', tsx: 'TSX',
+    js: 'JS', jsx: 'JSX', json: 'JSON', md: 'MD', txt: 'TXT'
   }
-  const colors: Record<string, string> = {
-    pdf: 'plasmo-text-red-600', doc: 'plasmo-text-blue-600', docx: 'plasmo-text-blue-600',
-    ppt: 'plasmo-text-orange-600', pptx: 'plasmo-text-orange-600',
-    xls: 'plasmo-text-green-600', xlsx: 'plasmo-text-green-600'
-  }
-  return <span className={`plasmo-text-[10px] plasmo-font-bold ${colors[ext!] || 'plasmo-text-gray-500'}`}>{icons[ext!] || 'FILE'}</span>
+  return (
+    <div className="plasmo-flex plasmo-flex-col plasmo-items-center plasmo-justify-center">
+        <svg className="plasmo-w-8 plasmo-h-8 plasmo-text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+        </svg>
+        <span className="plasmo-absolute plasmo-text-[7px] plasmo-font-black plasmo-text-slate-500 plasmo-mt-1.5 plasmo-uppercase">{icons[ext!] || (ext?.slice(0, 3) || 'FILE')}</span>
+    </div>
+  )
 }
 
-const TrashIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M3 6h18"></path>
-    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
-    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+const TrashIcon = ({ size = 14 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    <line x1="10" y1="11" x2="10" y2="17" />
+    <line x1="14" y1="11" x2="14" y2="17" />
   </svg>
 )

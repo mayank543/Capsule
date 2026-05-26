@@ -1,4 +1,4 @@
-# Capsule 💊
+ø# Capsule 💊
 
 Capsule is a smart local file manager built as a Chrome Extension. It allows you to organize files on your computer into customizable categories that map directly to physical subfolders, all through a convenient browser interface.
 
@@ -22,17 +22,20 @@ Capsule is a smart local file manager built as a Chrome Extension. It allows you
 ## 📦 Installation & Setup
 
 1. **Clone the repository:**
+
    ```bash
    git clone https://github.com/mayank543/Capsule.git
    cd Capsule
    ```
 
 2. **Install dependencies:**
+
    ```bash
    npm install
    ```
 
 3. **Start the development server:**
+
    ```bash
    npm run dev
    ```
@@ -54,7 +57,7 @@ Capsule is a smart local file manager built as a Chrome Extension. It allows you
 
 If clicking "Select Root Folder" doesn't do anything or the permission prompt doesn't appear:
 
-1. **Use the Options Page:** The Chrome popup can sometimes close too quickly, breaking the folder selection process. 
+1. **Use the Options Page:** The Chrome popup can sometimes close too quickly, breaking the folder selection process.
 2. **Right-click** the Capsule extension icon in your browser toolbar.
 3. Select **Options** (or go to `Manage Extension` -> `Extension Options`).
 4. In the new window that opens, click **Select Root Folder**.
@@ -65,10 +68,11 @@ If clicking "Select Root Folder" doesn't do anything or the permission prompt do
 ## 🚧 Work in Progress
 
 This project is actively being developed. Current focus areas:
+
 - [ ] Nested categories (Sub-folders).
 - [ ] Search functionality within the vault.
 - [ ] File previewing for common formats.
 - [ ] Manual notes and descriptions for individual files.
 - [ ] Version history tracking.
 
-*Note: This is an experimental tool using modern browser APIs. Always keep backups of your important files.*
+_Note: This is an experimental tool using modern browser APIs. Always keep backups of your important files._

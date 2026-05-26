@@ -6,6 +6,7 @@ export interface FileSystemItem {
   name: string
   kind: "file" | "directory"
   handle: FileSystemHandle
+  lastModified?: number
 }
 
 export async function pickRootDirectory(): Promise<FileSystemDirectoryHandle | null> {
@@ -75,39 +76,57 @@ export async function listDirectoryContents(
   const items: FileSystemItem[] = []
   try {
     console.log("[FSA] Listing contents for:", directoryHandle.name)
-    // Using values() as it's often more stable in Chrome's async iterators
     const iterator = (directoryHandle as any).values()
-    console.log("[FSA] Iterator obtained")
     
     for await (const entry of iterator) {
-      console.log(`[FSA] Found: ${entry.name} (${entry.kind})`)
+      let lastModified: number | undefined
+      if (entry.kind === "file") {
+        try {
+          const file = await (entry as FileSystemFileHandle).getFile()
+          lastModified = file.lastModified
+        } catch (e) {
+          console.warn("[FSA] Could not get date for", entry.name)
+        }
+      }
+      
       items.push({
         name: entry.name,
         kind: entry.kind,
-        handle: entry
+        handle: entry,
+        lastModified
       })
     }
-    console.log("[FSA] Listing complete. Total items:", items.length)
   } catch (error) {
     console.error("[FSA] CRITICAL Error listing contents:", error)
   }
   return items
 }
 
+/**
+ * Gets or creates a deep subdirectory path sequentially.
+ * Supports "folder/subfolder/leaf"
+ */
 export async function getOrCreateSubdirectory(
   parentHandle: FileSystemDirectoryHandle,
-  name: string
+  path: string
 ): Promise<FileSystemDirectoryHandle> {
-  console.log(`[FSA] Getting/Creating subdirectory: ${name}`)
-  return await parentHandle.getDirectoryHandle(name, { create: true })
+  console.log(`[FSA] Getting/Creating path: ${path}`)
+  const parts = path.split("/").filter(Boolean)
+  let currentHandle = parentHandle
+  for (const part of parts) {
+    currentHandle = await currentHandle.getDirectoryHandle(part, { create: true })
+  }
+  return currentHandle
 }
 
 export async function saveFileToDirectory(
   directoryHandle: FileSystemDirectoryHandle,
-  file: File
+  file: File,
+  customName?: string
 ): Promise<FileSystemFileHandle> {
-  console.log(`[FSA] Saving file: ${file.name} to ${directoryHandle.name}`)
-  const fileHandle = await directoryHandle.getFileHandle(file.name, { create: true })
+  const name = customName || file.name
+  console.log(`[FSA] Saving file: ${name} to ${directoryHandle.name}`)
+  const fileHandle = await directoryHandle.getFileHandle(name, { create: true })
   const writable = await (fileHandle as any).createWritable()
   await writable.write(file)
   await writable.close()

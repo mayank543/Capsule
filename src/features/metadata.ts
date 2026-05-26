@@ -8,6 +8,8 @@ export interface Category {
   path: string
   description?: string
   parentId?: string
+  isVersioned?: boolean
+  autoRename?: boolean
 }
 
 export interface FileMetadata {
@@ -33,6 +35,15 @@ export async function addCategory(category: Category): Promise<void> {
   const categories = await getCategories()
   categories.push(category)
   await saveCategories(categories)
+}
+
+export async function updateCategory(categoryId: string, updates: Partial<Category>): Promise<void> {
+  const categories = await getCategories()
+  const index = categories.findIndex((c) => c.id === categoryId)
+  if (index !== -1) {
+    categories[index] = { ...categories[index], ...updates }
+    await saveCategories(categories)
+  }
 }
 
 export async function getFileMetadata(): Promise<Record<string, FileMetadata>> {
