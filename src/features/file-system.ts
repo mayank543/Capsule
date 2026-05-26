@@ -10,41 +10,37 @@ export interface FileSystemItem {
 
 export async function pickRootDirectory(): Promise<FileSystemDirectoryHandle | null> {
   try {
-    console.log("Opening directory picker...")
+    console.log("[FSA] Opening directory picker...")
     const handle = await (window as any).showDirectoryPicker({
       mode: "readwrite"
     })
-    console.log("Directory handle obtained:", handle.name)
+    console.log("[FSA] Directory handle obtained:", handle.name)
     await set(ROOT_HANDLE_KEY, handle)
+    console.log("[FSA] Handle saved to IndexedDB")
     return handle
   } catch (error) {
-    console.error("Error picking directory:", error)
-    if (error instanceof Error) {
-      console.error("Error message:", error.message)
-      console.error("Error name:", error.name)
-    }
+    console.error("[FSA] Error picking directory:", error)
     return null
   }
 }
 
 export async function getStoredRootDirectory(): Promise<FileSystemDirectoryHandle | null> {
   try {
+    console.log("[FSA] Attempting to retrieve stored handle...")
     const handle = await get<FileSystemDirectoryHandle>(ROOT_HANDLE_KEY)
     if (!handle) {
-      console.log("No stored root handle found.")
+      console.log("[FSA] No handle found in storage.")
       return null
     }
 
-    console.log("Stored handle found, verifying permission...")
+    console.log("[FSA] Handle found:", handle.name, ". Verifying permission...")
     const permission = await verifyPermission(handle)
-    if (!permission) {
-      console.log("Permission denied for stored handle.")
-      return null
-    }
+    console.log("[FSA] Permission granted:", permission)
+    if (!permission) return null
 
     return handle
   } catch (error) {
-    console.error("Error retrieving stored directory:", error)
+    console.error("[FSA] Error retrieving stored directory:", error)
     return null
   }
 }
@@ -60,19 +56,15 @@ export async function verifyPermission(
 
   try {
     const currentStatus = await (handle as any).queryPermission(options)
-    console.log("Current permission status:", currentStatus)
-    
-    if (currentStatus === "granted") {
-      return true
-    }
+    console.log("[FSA] Current status:", currentStatus)
+    if (currentStatus === "granted") return true
 
-    console.log("Requesting permission...")
+    console.log("[FSA] Requesting fresh permission...")
     const requestStatus = await (handle as any).requestPermission(options)
-    console.log("Requested permission status:", requestStatus)
-    
+    console.log("[FSA] Request status:", requestStatus)
     return requestStatus === "granted"
   } catch (error) {
-    console.error("Error verifying permission:", error)
+    console.error("[FSA] Error verifying permission:", error)
     return false
   }
 }
@@ -81,13 +73,23 @@ export async function listDirectoryContents(
   directoryHandle: FileSystemDirectoryHandle
 ): Promise<FileSystemItem[]> {
   const items: FileSystemItem[] = []
-  // @ts-ignore
-  for await (const entry of directoryHandle.values()) {
-    items.push({
-      name: entry.name,
-      kind: entry.kind,
-      handle: entry
-    })
+  try {
+    console.log("[FSA] Listing contents for:", directoryHandle.name)
+    // Using values() as it's often more stable in Chrome's async iterators
+    const iterator = (directoryHandle as any).values()
+    console.log("[FSA] Iterator obtained")
+    
+    for await (const entry of iterator) {
+      console.log(`[FSA] Found: ${entry.name} (${entry.kind})`)
+      items.push({
+        name: entry.name,
+        kind: entry.kind,
+        handle: entry
+      })
+    }
+    console.log("[FSA] Listing complete. Total items:", items.length)
+  } catch (error) {
+    console.error("[FSA] CRITICAL Error listing contents:", error)
   }
   return items
 }
@@ -96,6 +98,7 @@ export async function getOrCreateSubdirectory(
   parentHandle: FileSystemDirectoryHandle,
   name: string
 ): Promise<FileSystemDirectoryHandle> {
+  console.log(`[FSA] Getting/Creating subdirectory: ${name}`)
   return await parentHandle.getDirectoryHandle(name, { create: true })
 }
 
@@ -103,6 +106,7 @@ export async function saveFileToDirectory(
   directoryHandle: FileSystemDirectoryHandle,
   file: File
 ): Promise<FileSystemFileHandle> {
+  console.log(`[FSA] Saving file: ${file.name} to ${directoryHandle.name}`)
   const fileHandle = await directoryHandle.getFileHandle(file.name, { create: true })
   const writable = await (fileHandle as any).createWritable()
   await writable.write(file)
@@ -114,5 +118,6 @@ export async function removeItem(
   parentHandle: FileSystemDirectoryHandle,
   name: string
 ): Promise<void> {
+  console.log(`[FSA] Removing entry: ${name} from ${parentHandle.name}`)
   await (parentHandle as any).removeEntry(name, { recursive: true })
 }
