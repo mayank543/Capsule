@@ -50,6 +50,16 @@ Capsule is a smart local file manager built as a Chrome Extension. It allows you
 3. Grant the "View and edit files" permission when prompted by Chrome.
 4. Create categories (e.g., "Resumes", "PPTs") and drag your files in!
 
+## ⚠️ Troubleshooting (Folder Selection Issues)
+
+If clicking "Select Root Folder" doesn't do anything or the permission prompt doesn't appear:
+
+1. **Use the Options Page:** The Chrome popup can sometimes close too quickly, breaking the folder selection process. 
+2. **Right-click** the Capsule extension icon in your browser toolbar.
+3. Select **Options** (or go to `Manage Extension` -> `Extension Options`).
+4. In the new window that opens, click **Select Root Folder**.
+5. **Look for the Chrome Permission Bar:** A small bar will appear at the top of the browser tab asking for permission to "View and edit files". You **must** click **Allow** for the extension to work.
+
 ---
 
 ## 🚧 Work in Progress
