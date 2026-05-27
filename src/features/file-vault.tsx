@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from "react"
-import { getStoredRootDirectory, pickRootDirectory, listDirectoryContents, getOrCreateSubdirectory, saveFileToDirectory, type FileSystemItem, verifyPermission } from "./file-system"
+import { getStoredRootDirectory, pickRootDirectory, listDirectoryContents, getOrCreateSubdirectory, saveFileToDirectory, removeItem, type FileSystemItem, verifyPermission } from "./file-system"
 import { getCategories, addCategory, saveCategories, updateCategory, removeCategory, type Category, saveFileMetadata, getFileMetadata, type FileMetadata } from "./metadata"
 import { Storage } from "@plasmohq/storage"
 import { get } from "idb-keyval"
@@ -19,6 +19,7 @@ export const FileVault = ({ isSidePanel = false }: { isSidePanel?: boolean }) =>
   const [viewMode, setViewMode] = useState<string>("sidepanel")
   const [permissionRequired, setPermissionRequired] = useState(false)
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
+  const [baseRootPath, setBaseRootPath] = useState<string>("")
 
   const syncPhysicalFolders = useCallback(async (handle: FileSystemDirectoryHandle, currentCats: Category[]) => {
     try {
@@ -60,6 +61,8 @@ export const FileVault = ({ isSidePanel = false }: { isSidePanel?: boolean }) =>
     try {
       const mode = await storage.get("view-mode")
       if (mode) setViewMode(mode as string)
+      const rootPath = await storage.get("base-root-path")
+      if (rootPath) setBaseRootPath(rootPath as string)
       const meta = await getFileMetadata()
       setFileMetadata(meta)
       const handle = await getStoredRootDirectory()
@@ -119,6 +122,25 @@ export const FileVault = ({ isSidePanel = false }: { isSidePanel?: boolean }) =>
     setSelectedCategory({ ...selectedCategory, autoRename: newState })
   }
 
+  const handleSetRootPath = async () => {
+    const path = prompt("Enter the absolute path to your storage root (e.g., /Users/name/Vault):", baseRootPath)
+    if (path !== null) {
+      const cleanPath = path.trim().replace(/\/$/, "")
+      await storage.set("base-root-path", cleanPath)
+      setBaseRootPath(cleanPath)
+    }
+  }
+
+  const handleCopyPath = (relPath: string) => {
+    if (!baseRootPath) {
+      alert("Please set the 'Path' first in the top header.")
+      handleSetRootPath()
+      return
+    }
+    const fullPath = `${baseRootPath}/${relPath}`.replace(/\/+/g, "/")
+    navigator.clipboard.writeText(fullPath)
+  }
+
   const handleSelectRoot = async () => {
     const handle = await pickRootDirectory()
     if (handle) {
@@ -164,13 +186,25 @@ export const FileVault = ({ isSidePanel = false }: { isSidePanel?: boolean }) =>
 
   const handleDeleteCategory = async (category: Category, e: React.MouseEvent) => {
     e.stopPropagation()
-    const warning = `Warning: Deleting the folder "${category.name}" will also remove all its sub-folders from Capsule. Files on your computer will not be deleted, but they will disappear from this view. Proceed?`
+    const warning = `Warning: Deleting the folder "${category.name}" will permanently delete it and all its contents from your computer. Proceed?`
     if (confirm(warning)) {
-      await removeCategory(category.id)
-      const updatedCats = await getCategories()
-      setCategories(updatedCats)
-      if (selectedCategory?.path.startsWith(category.path)) {
-        setSelectedCategory(null)
+      try {
+        if (rootHandle) {
+          const parts = category.path.split('/')
+          const parentPath = parts.slice(0, -1).join('/')
+          const folderName = parts[parts.length - 1]
+          const parentHandle = parentPath ? await getOrCreateSubdirectory(rootHandle, parentPath) : rootHandle
+          await removeItem(parentHandle, folderName)
+        }
+        await removeCategory(category.id)
+        const updatedCats = await getCategories()
+        setCategories(updatedCats)
+        if (selectedCategory?.path.startsWith(category.path)) {
+          setSelectedCategory(null)
+        }
+      } catch (err) {
+        console.error("[UI] Physical delete error:", err)
+        alert("Could not delete the physical folder. It may be in use.")
       }
     }
   }
@@ -213,12 +247,15 @@ export const FileVault = ({ isSidePanel = false }: { isSidePanel?: boolean }) =>
 
   const handleDeleteFile = async (fileName: string) => {
     if (!selectedCategory || !rootHandle) return
-    if (confirm(`Delete ${fileName}?`)) {
+    if (confirm(`Permanently delete ${fileName}?`)) {
       try {
         const catHandle = await getOrCreateSubdirectory(rootHandle, selectedCategory.path)
-        await (catHandle as any).removeEntry(fileName)
+        await removeItem(catHandle, fileName)
         loadFiles(selectedCategory)
-      } catch (err) { console.error("[UI] Delete error", err) }
+      } catch (err) { 
+        console.error("[UI] Delete error", err)
+        alert("Could not delete the file. It may be in use.")
+      }
     }
   }
 
@@ -269,12 +306,21 @@ export const FileVault = ({ isSidePanel = false }: { isSidePanel?: boolean }) =>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
             </svg>
             <span className="plasmo-text-[12px] plasmo-font-normal plasmo-truncate plasmo-flex-1">{node.name}</span>
-            <button 
-              onClick={(e) => handleDeleteCategory(node, e)}
-              className="plasmo-opacity-0 group-hover:plasmo-opacity-100 plasmo-p-1 plasmo-text-slate-300 hover:plasmo-text-red-400 plasmo-transition-all"
-            >
-               <TrashIcon size={10} />
-            </button>
+            <div className="plasmo-flex plasmo-opacity-0 group-hover:plasmo-opacity-100 plasmo-transition-all">
+                <button 
+                  onClick={(e) => { e.stopPropagation(); handleCopyPath(node.path); }}
+                  className="plasmo-p-1 plasmo-text-slate-300 hover:plasmo-text-slate-600 plasmo-mr-0.5"
+                  title="Copy Absolute Path"
+                >
+                   <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                </button>
+                <button 
+                  onClick={(e) => handleDeleteCategory(node, e)}
+                  className="plasmo-opacity-0 group-hover:plasmo-opacity-100 plasmo-p-1 plasmo-text-slate-300 hover:plasmo-text-red-400 plasmo-transition-all"
+                >
+                   <TrashIcon size={10} />
+                </button>
+            </div>
           </div>
           {isExpanded && hasChildren && renderTree(node.children, depth + 1)}
         </div>
@@ -331,6 +377,12 @@ export const FileVault = ({ isSidePanel = false }: { isSidePanel?: boolean }) =>
                   className="plasmo-text-[10px] plasmo-text-slate-400 plasmo-px-2.5 plasmo-py-1 plasmo-rounded-md hover:plasmo-bg-slate-50 hover:plasmo-text-slate-600 plasmo-uppercase plasmo-tracking-wider plasmo-transition-colors"
                 >
                   Sync
+                </button>
+                <button 
+                  onClick={handleSetRootPath} 
+                  className={`plasmo-text-[10px] plasmo-px-2.5 plasmo-py-1 plasmo-rounded-md plasmo-uppercase plasmo-tracking-wider plasmo-transition-colors ${baseRootPath ? 'plasmo-text-slate-600 plasmo-bg-slate-50' : 'plasmo-text-slate-400 hover:plasmo-bg-slate-50 hover:plasmo-text-slate-600'}`}
+                >
+                  {baseRootPath ? 'Path Set' : 'Set Path'}
                 </button>
             </div>
         </div>
@@ -416,63 +468,65 @@ export const FileVault = ({ isSidePanel = false }: { isSidePanel?: boolean }) =>
                     <p className="plasmo-text-[11px] plasmo-font-semibold plasmo-text-slate-400 plasmo-uppercase plasmo-tracking-[0.2em]">Select a Workspace</p>
                 </div>
             ) : (
-                <div className="plasmo-grid plasmo-grid-cols-4 sm:plasmo-grid-cols-5 md:plasmo-grid-cols-6 plasmo-gap-x-4 plasmo-gap-y-8">
+                <div className={selectedCategory.isVersioned ? "plasmo-flex plasmo-flex-wrap plasmo-gap-y-8 plasmo-items-start" : "plasmo-grid plasmo-grid-cols-4 sm:plasmo-grid-cols-5 md:plasmo-grid-cols-6 plasmo-gap-x-4 plasmo-gap-y-8"}>
                     {files.map((file, index) => {
                         const note = fileMetadata[`${selectedCategory.path}/${file.name}`]?.notes;
                         const isLatest = index === 0 && selectedCategory.isVersioned;
                         return (
-                            <div key={file.name} className="plasmo-relative plasmo-group">
-                                <div className={`plasmo-flex plasmo-flex-col plasmo-items-center plasmo-p-3 plasmo-rounded-xl plasmo-transition-all ${isLatest ? 'plasmo-bg-slate-50' : 'hover:plasmo-bg-slate-50/80'}`}>
-                                    <div className="plasmo-w-14 plasmo-h-14 plasmo-rounded-xl plasmo-flex plasmo-items-center plasmo-justify-center plasmo-mb-3 plasmo-bg-white plasmo-border plasmo-border-slate-100 plasmo-shadow-sm group-hover:plasmo-border-slate-200 plasmo-transition-all">
-                                        <FileIcon name={file.name} size="lg" />
-                                    </div>
-                                    <p className="plasmo-text-[11px] plasmo-font-medium plasmo-text-slate-700 plasmo-text-center plasmo-w-full plasmo-truncate plasmo-px-1" title={file.name}>
-                                        {file.name}
-                                    </p>
-                                    
-                                    {/* Minimal Action Overlay */}
-                                    <div className="plasmo-absolute plasmo-top-1 plasmo-right-1 plasmo-flex plasmo-flex-col plasmo-space-y-1 plasmo-opacity-0 group-hover:plasmo-opacity-100 plasmo-transition-opacity">
-                                        <button 
-                                          onClick={() => handleAddNote(file.name)} 
-                                          className="plasmo-p-1.5 plasmo-bg-white plasmo-rounded-md plasmo-shadow-sm plasmo-border plasmo-border-slate-100 plasmo-text-slate-400 hover:plasmo-text-slate-900 plasmo-transition-colors"
-                                        >
-                                          <svg className="plasmo-w-3 plasmo-h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                                            <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                          </svg>
-                                        </button>
-                                        <button 
-                                          onClick={() => handleDeleteFile(file.name)} 
-                                          className="plasmo-p-1.5 plasmo-bg-white plasmo-rounded-md plasmo-shadow-sm plasmo-border plasmo-border-slate-100 plasmo-text-slate-400 hover:plasmo-text-red-500 plasmo-transition-colors"
-                                        >
-                                          <TrashIcon size={12} />
-                                        </button>
-                                    </div>
+                            <React.Fragment key={file.name}>
+                                <div className={`plasmo-relative plasmo-group ${selectedCategory.isVersioned ? 'plasmo-w-32' : ''}`}>
+                                    <div className={`plasmo-flex plasmo-flex-col plasmo-items-center plasmo-p-3 plasmo-rounded-xl plasmo-transition-all ${isLatest ? 'plasmo-bg-slate-50' : 'hover:plasmo-bg-slate-50/80'}`}>
+                                        <div className="plasmo-w-14 plasmo-h-14 plasmo-rounded-xl plasmo-flex plasmo-items-center plasmo-justify-center plasmo-mb-3 plasmo-bg-white plasmo-border plasmo-border-slate-100 plasmo-shadow-sm group-hover:plasmo-border-slate-200 plasmo-transition-all">
+                                            <FileIcon name={file.name} size="lg" />
+                                        </div>
+                                        <p className="plasmo-text-[11px] plasmo-font-medium plasmo-text-slate-700 plasmo-text-center plasmo-w-full plasmo-truncate plasmo-px-1" title={file.name}>
+                                            {file.name}
+                                        </p>
+                                        
+                                        {/* Minimal Action Overlay */}
+                                        <div className="plasmo-absolute plasmo-top-1 plasmo-right-1 plasmo-flex plasmo-flex-col plasmo-space-y-1 plasmo-opacity-0 group-hover:plasmo-opacity-100 plasmo-transition-opacity">
+                                            <button 
+                                              onClick={() => handleAddNote(file.name)} 
+                                              className="plasmo-p-1.5 plasmo-bg-white plasmo-rounded-md plasmo-shadow-sm plasmo-border plasmo-border-slate-100 plasmo-text-slate-400 hover:plasmo-text-slate-900 plasmo-transition-colors"
+                                            >
+                                              <svg className="plasmo-w-3 plasmo-h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                                                <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002 2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                              </svg>
+                                            </button>
+                                            <button 
+                                              onClick={() => handleDeleteFile(file.name)} 
+                                              className="plasmo-p-1.5 plasmo-bg-white plasmo-rounded-md plasmo-shadow-sm plasmo-border plasmo-border-slate-100 plasmo-text-slate-400 hover:plasmo-text-red-500 plasmo-transition-colors"
+                                            >
+                                              <TrashIcon size={12} />
+                                            </button>
+                                        </div>
 
-                                    {note && (
-                                        <div className="plasmo-absolute plasmo-top-2 plasmo-left-2">
-                                            <div className="plasmo-relative plasmo-group/note">
-                                                <div className="plasmo-w-2 plasmo-h-2 plasmo-bg-slate-400 plasmo-rounded-full plasmo-ring-2 plasmo-ring-white"></div>
-                                                {/* Minimal Tooltip */}
-                                                <div className="plasmo-absolute plasmo-left-4 plasmo-top-0 plasmo-bg-white plasmo-text-slate-600 plasmo-text-[10px] plasmo-p-2.5 plasmo-rounded-lg plasmo-shadow-xl plasmo-w-40 plasmo-opacity-0 group-hover/note:plasmo-opacity-100 plasmo-transition-opacity plasmo-pointer-events-none plasmo-border plasmo-border-slate-100 plasmo-z-10">
-                                                    {note}
+                                        {note && (
+                                            <div className="plasmo-absolute plasmo-top-2 plasmo-left-2">
+                                                <div className="plasmo-relative plasmo-group/note">
+                                                    <div className="plasmo-w-2 plasmo-h-2 plasmo-bg-slate-400 plasmo-rounded-full plasmo-ring-2 plasmo-ring-white"></div>
+                                                    {/* Minimal Tooltip */}
+                                                    <div className="plasmo-absolute plasmo-left-4 plasmo-top-0 plasmo-bg-white plasmo-text-slate-600 plasmo-text-[10px] plasmo-p-2.5 plasmo-rounded-lg plasmo-shadow-xl plasmo-w-40 plasmo-opacity-0 group-hover/note:plasmo-opacity-100 plasmo-transition-opacity plasmo-pointer-events-none plasmo-border plasmo-border-slate-100 plasmo-z-10">
+                                                        {note}
+                                                    </div>
                                                 </div>
                                             </div>
-                                        </div>
-                                    )}
-                                    {isLatest && (
-                                        <div className="plasmo-mt-1.5">
-                                            <span className="plasmo-text-[8px] plasmo-bg-slate-100 plasmo-text-slate-600 plasmo-px-1.5 plasmo-py-0.5 plasmo-rounded-md plasmo-font-bold plasmo-uppercase plasmo-tracking-tighter">Current</span>
-                                        </div>
-                                    )}
+                                        )}
+                                        {isLatest && (
+                                            <div className="plasmo-mt-1.5">
+                                                <span className="plasmo-text-[8px] plasmo-bg-slate-100 plasmo-text-slate-600 plasmo-px-1.5 plasmo-py-0.5 plasmo-rounded-md plasmo-font-bold plasmo-uppercase plasmo-tracking-tighter">Latest</span>
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
                                 {selectedCategory.isVersioned && index < files.length - 1 && (
-                                    <div className="plasmo-absolute plasmo--right-2 plasmo-top-7 plasmo-opacity-20">
-                                        <svg className="plasmo-w-3 plasmo-h-3 plasmo-text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                                    <div className="plasmo-flex plasmo-items-center plasmo-justify-center plasmo-w-8 plasmo-h-14 plasmo-mt-3">
+                                        <svg className="plasmo-w-4 plasmo-h-4 plasmo-text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
                                             <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
                                         </svg>
                                     </div>
                                 )}
-                            </div>
+                            </React.Fragment>
                         )
                     })}
                 </div>
@@ -505,18 +559,49 @@ const CapsuleLogo = ({ className }: { className?: string }) => (
 
 const FileIcon = ({ name, size = "sm" }: { name: string, size?: "sm" | "lg" }) => {
   const ext = name.split('.').pop()?.toLowerCase()
-  const icons: Record<string, string> = { 
-    pdf: 'PDF', doc: 'DOC', docx: 'DOC', ppt: 'PPT', pptx: 'PPT', 
-    xls: 'XLS', xlsx: 'XLS', csv: 'CSV', zip: 'ZIP', png: 'IMG', 
-    jpg: 'IMG', jpeg: 'IMG', svg: 'SVG', ts: 'TS', tsx: 'TSX',
-    js: 'JS', jsx: 'JSX', json: 'JSON', md: 'MD', txt: 'TXT'
+  
+  const getIconConfig = (extension: string) => {
+    switch (extension) {
+      case 'pdf': return { color: 'plasmo-text-red-500', bg: 'plasmo-bg-red-50', label: 'PDF' }
+      case 'doc':
+      case 'docx': return { color: 'plasmo-text-blue-600', bg: 'plasmo-bg-blue-50', label: 'DOC' }
+      case 'xls':
+      case 'xlsx':
+      case 'csv': return { color: 'plasmo-text-emerald-600', bg: 'plasmo-bg-emerald-50', label: 'XLS' }
+      case 'ppt':
+      case 'pptx': return { color: 'plasmo-text-orange-600', bg: 'plasmo-bg-orange-50', label: 'PPT' }
+      case 'zip':
+      case 'rar':
+      case '7z': return { color: 'plasmo-text-amber-600', bg: 'plasmo-bg-amber-50', label: 'ZIP' }
+      case 'png':
+      case 'jpg':
+      case 'jpeg':
+      case 'gif':
+      case 'webp': return { color: 'plasmo-text-purple-600', bg: 'plasmo-bg-purple-50', label: 'IMG' }
+      case 'svg': return { color: 'plasmo-text-pink-500', bg: 'plasmo-bg-pink-50', label: 'SVG' }
+      case 'ts':
+      case 'tsx': return { color: 'plasmo-text-blue-500', bg: 'plasmo-bg-blue-50', label: 'TS' }
+      case 'js':
+      case 'jsx': return { color: 'plasmo-text-yellow-600', bg: 'plasmo-bg-yellow-50', label: 'JS' }
+      case 'json': return { color: 'plasmo-text-orange-500', bg: 'plasmo-bg-orange-50', label: 'JSON' }
+      case 'md':
+      case 'txt': return { color: 'plasmo-text-slate-600', bg: 'plasmo-bg-slate-50', label: 'TXT' }
+      default: return { color: 'plasmo-text-slate-400', bg: 'plasmo-bg-slate-50', label: extension?.toUpperCase() || 'FILE' }
+    }
   }
+
+  const config = getIconConfig(ext || '')
+  
   return (
-    <div className="plasmo-flex plasmo-flex-col plasmo-items-center plasmo-justify-center">
-        <svg className="plasmo-w-8 plasmo-h-8 plasmo-text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+    <div className={`plasmo-relative plasmo-flex plasmo-items-center plasmo-justify-center ${size === 'lg' ? 'plasmo-w-10 plasmo-h-10' : 'plasmo-w-8 plasmo-h-8'}`}>
+        <svg className={`plasmo-w-full plasmo-h-full ${config.color}`} viewBox="0 0 24 24" fill="currentColor">
+            <path d="M7 2c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V8l-6-6H7z" opacity="0.15" />
+            <path d="M13 9V3.5L18.5 9H13z" opacity="0.25" />
+            <path fillRule="evenodd" clipRule="evenodd" d="M7 2C5.89543 2 5 2.89543 5 4V20C5 21.1046 5.89543 22 7 22H17C18.1046 22 19 21.1046 19 20V8L13 2H7ZM13 3.5V9H18.5L13 3.5ZM7 4H12V10H18V20H7V4Z" />
         </svg>
-        <span className="plasmo-absolute plasmo-text-[7px] plasmo-font-black plasmo-text-slate-500 plasmo-mt-1.5 plasmo-uppercase">{icons[ext!] || (ext?.slice(0, 3) || 'FILE')}</span>
+        <span className={`plasmo-absolute plasmo-bottom-1 plasmo-font-black plasmo-tracking-tighter ${size === 'lg' ? 'plasmo-text-[8px]' : 'plasmo-text-[6px]'} ${config.color} plasmo-opacity-80`}>
+            {config.label}
+        </span>
     </div>
   )
 }

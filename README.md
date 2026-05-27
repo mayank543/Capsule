@@ -1,4 +1,4 @@
-ø# Capsule 💊
+# Capsule 💊
 
 Capsule is a smart local file manager built as a Chrome Extension. It allows you to organize files on your computer into customizable categories that map directly to physical subfolders, all through a convenient browser interface.
 
