@@ -12,9 +12,12 @@ export interface CandidateRecord {
   successChance: SuccessChance
   referralDone: boolean
   followUpDates: string[] // ISO strings: YYYY-MM-DD
+  followUpDone: boolean
+  followUpTargetDate: string // ISO string: YYYY-MM-DD
   notes?: string
+  archiveReason?: string
   lastUpdated: number
-  status: "applied" | "interviewing" | "offered" | "rejected"
+  status: "applied" | "interviewing" | "offered" | "rejected" | "ghosted"
   dateApplied?: string // ISO string: YYYY-MM-DD
   pointOfContact?: string
 }
@@ -23,7 +26,7 @@ const CRM_RECORDS_KEY = "candidate-crm-records"
 const GEMINI_API_KEY = "gemini-api-key"
 const VISIBLE_COLUMNS_KEY = "crm-visible-columns"
 
-export type CRMColumn = "company" | "chances" | "status" | "dateApplied" | "pointOfContact" | "referralDone" | "jobDescription" | "actions"
+export type CRMColumn = "company" | "chances" | "status" | "dateApplied" | "pointOfContact" | "referralDone" | "jobDescription" | "followUp" | "actions"
 
 export const DEFAULT_COLUMNS: CRMColumn[] = ["company", "chances", "status", "actions"]
 

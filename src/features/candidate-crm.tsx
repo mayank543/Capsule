@@ -12,6 +12,7 @@ const ALL_COLUMNS: { id: CRMColumn, label: string }[] = [
     { id: 'dateApplied', label: 'Applied' },
     { id: 'pointOfContact', label: 'Contact' },
     { id: 'referralDone', label: 'Referral' },
+    { id: 'followUp', label: 'Follow Up' },
     { id: 'chances', label: 'Chances' },
     { id: 'status', label: 'Status' },
     { id: 'actions', label: 'Actions' }
@@ -23,6 +24,7 @@ const COLUMN_WIDTHS: Record<CRMColumn, string> = {
     dateApplied: 'plasmo-w-24',
     pointOfContact: 'plasmo-w-24',
     referralDone: 'plasmo-w-16',
+    followUp: 'plasmo-w-28',
     chances: 'plasmo-w-20',
     status: 'plasmo-w-24',
     actions: 'plasmo-w-16'
@@ -38,10 +40,10 @@ export const CandidateCRM = ({ isFullPage = false }: CandidateCRMProps) => {
   const [apiKey, setApiKey] = useState("")
   const [aiResponse, setAiResponse] = useState<{ message: string, type: 'query' | 'error' } | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [visibleColumns, setVisibleColumns] = useState<CRMColumn[]>(['company', 'chances', 'status', 'actions'])
+  const [visibleColumns, setVisibleColumns] = useState<CRMColumn[]>(['company', 'followUp', 'status', 'actions'])
 
-  // Internal Sub-Tabs to toggle between Grid and Data Entry
-  const [activeSubTab, setActiveSubTab] = useState<'grid' | 'add'>('grid')
+  // Internal Sub-Tabs to toggle between Grid, Archives, and Data Entry
+  const [activeSubTab, setActiveSubTab] = useState<'grid' | 'archives' | 'add'>('grid')
 
   const [quickForm, setQuickForm] = useState({
     companyName: "",
@@ -51,6 +53,7 @@ export const CandidateCRM = ({ isFullPage = false }: CandidateCRMProps) => {
     referralDone: false,
     status: "applied" as CandidateRecord['status'],
     dateApplied: new Date().toISOString().split('T')[0],
+    followUpTargetDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     pointOfContact: ""
   })
 
@@ -116,6 +119,7 @@ export const CandidateCRM = ({ isFullPage = false }: CandidateCRMProps) => {
       id: Math.random().toString(36).substr(2, 9),
       ...quickForm,
       followUpDates: [],
+      followUpDone: false,
       notes: "",
       lastUpdated: Date.now()
     }
@@ -128,6 +132,7 @@ export const CandidateCRM = ({ isFullPage = false }: CandidateCRMProps) => {
       referralDone: false,
       status: "applied",
       dateApplied: new Date().toISOString().split('T')[0],
+      followUpTargetDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
       pointOfContact: ""
     })
     loadRecords()
@@ -155,6 +160,8 @@ export const CandidateCRM = ({ isFullPage = false }: CandidateCRMProps) => {
                     successChance: response.data.successChance || "Medium",
                     referralDone: !!response.data.referralDone,
                     followUpDates: response.data.followUpDates || [],
+                    followUpDone: false,
+                    followUpTargetDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
                     notes: response.data.notes || "",
                     status: response.data.status || "applied",
                     dateApplied: response.data.dateApplied || new Date().toISOString().split('T')[0],
@@ -179,28 +186,44 @@ export const CandidateCRM = ({ isFullPage = false }: CandidateCRMProps) => {
   }
 
   const filteredRecords = useMemo(() => {
-    return records.filter(r => 
+    let base = records.filter(r => 
         r.companyName.toLowerCase().includes(searchQuery.toLowerCase()) ||
         r.jobDescription.toLowerCase().includes(searchQuery.toLowerCase()) ||
         (r.pointOfContact && r.pointOfContact.toLowerCase().includes(searchQuery.toLowerCase()))
-    ).sort((a, b) => b.lastUpdated - a.lastUpdated)
-  }, [records, searchQuery])
+    )
+
+    const sortFn = (a: CandidateRecord, b: CandidateRecord) => {
+        // Primary sort: Date Applied (newest first)
+        const dateA = a.dateApplied || ""
+        const dateB = b.dateApplied || ""
+        if (dateA !== dateB) return dateB.localeCompare(dateA)
+        
+        // Fallback: Stable ID sort to prevent jumping
+        return b.id.localeCompare(a.id)
+    }
+
+    if (activeSubTab === 'archives') {
+        return base.filter(r => r.status === 'rejected' || r.status === 'ghosted').sort(sortFn)
+    } else {
+        return base.filter(r => r.status !== 'rejected' && r.status !== 'ghosted').sort(sortFn)
+    }
+  }, [records, searchQuery, activeSubTab])
 
   const today = new Date().toISOString().split('T')[0]
 
-  const getDaysSince = (dateStr?: string) => {
-    if (!dateStr) return null
-    const start = new Date(dateStr)
-    const todayDate = new Date()
-    const diffTime = todayDate.getTime() - start.getTime()
-    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24))
+  const getDaysBetween = (startStr?: string, endStr?: string) => {
+    if (!startStr || !endStr) return null
+    const start = new Date(startStr)
+    const end = new Date(endStr)
+    const diffTime = end.getTime() - start.getTime()
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
     return diffDays
   }
 
   const chanceStyles = {
     High: "plasmo-bg-emerald-50 plasmo-text-emerald-800 plasmo-border-emerald-200",
-    Medium: "plasmo-bg-amber-50 plasmo-text-amber-800 plasmo-border-amber-200",
-    Low: "plasmo-bg-rose-50 plasmo-text-rose-800 plasmo-border-rose-200"
+    Medium: "plasmo-bg-amber-50 plasmo-text-amber-800 plasmo-border-amber-100",
+    Low: "plasmo-bg-rose-50 plasmo-text-rose-800 plasmo-border-rose-100"
   }
 
   const openFullTab = () => {
@@ -213,50 +236,61 @@ export const CandidateCRM = ({ isFullPage = false }: CandidateCRMProps) => {
   }
 
   const renderCell = (record: CandidateRecord, colId: CRMColumn) => {
-    const daysSince = getDaysSince(record.dateApplied)
-    const isCold = daysSince !== null && daysSince > 10
+    const daysUntilFollowUp = getDaysBetween(today, record.followUpTargetDate)
+    const isDue = daysUntilFollowUp !== null && daysUntilFollowUp <= 0
 
     switch (colId) {
         case 'company':
             return (
-                <div className="plasmo-flex plasmo-flex-col">
-                    <input className="plasmo-w-full plasmo-text-[13px] plasmo-font-semibold plasmo-text-slate-900 plasmo-bg-transparent focus:plasmo-outline-none" defaultValue={record.companyName} onBlur={(e) => updateCandidateRecord(record.id, { companyName: e.target.value })} />
-                    <div className="plasmo-flex plasmo-items-center plasmo-space-x-2 plasmo-mt-0.5">
-                        {record.companyUrl && <a href={record.companyUrl.startsWith('http') ? record.companyUrl : `https://${record.companyUrl}`} target="_blank" rel="noreferrer" className="plasmo-text-[10px] plasmo-font-medium plasmo-text-blue-600 hover:plasmo-underline">Link ↗</a>}
-                        {isCold && <span className="plasmo-w-1.5 plasmo-h-1.5 plasmo-bg-blue-500 plasmo-rounded-full plasmo-animate-pulse" title="Cold application (>10 days)"></span>}
+                <div className="plasmo-flex plasmo-items-center">
+                    {isDue && record.status !== 'rejected' && record.status !== 'ghosted' && (
+                        <div className="plasmo-w-2 plasmo-h-2 plasmo-bg-rose-500 plasmo-rounded-full plasmo-mr-2 plasmo-animate-pulse" title="Follow-up Required"></div>
+                    )}
+                    <div className="plasmo-flex plasmo-flex-col plasmo-flex-1">
+                        <input className="plasmo-w-full plasmo-text-[13px] plasmo-font-semibold plasmo-text-slate-900 plasmo-bg-transparent focus:plasmo-outline-none" defaultValue={record.companyName} onBlur={(e) => updateCandidateRecord(record.id, { companyName: e.target.value }).then(loadRecords)} />
+                        <div className="plasmo-flex plasmo-items-center plasmo-space-x-2 plasmo-mt-0.5">
+                            {record.companyUrl && <a href={record.companyUrl.startsWith('http') ? record.companyUrl : `https://${record.companyUrl}`} target="_blank" rel="noreferrer" className="plasmo-text-[10px] plasmo-font-medium plasmo-text-blue-600 hover:plasmo-underline">Link ↗</a>}
+                        </div>
                     </div>
                 </div>
             )
         case 'chances':
             return (
-                <select className={`plasmo-w-full plasmo-text-[10px] plasmo-px-2 plasmo-py-1 plasmo-rounded-lg plasmo-font-bold plasmo-cursor-pointer plasmo-border ${chanceStyles[record.successChance]}`} defaultValue={record.successChance} onChange={(e) => updateCandidateRecord(record.id, { successChance: e.target.value as any })}>
+                <select className={`plasmo-w-full plasmo-text-[10px] plasmo-px-2 plasmo-py-1 plasmo-rounded-lg plasmo-font-bold plasmo-cursor-pointer plasmo-border ${chanceStyles[record.successChance]}`} defaultValue={record.successChance} onChange={(e) => updateCandidateRecord(record.id, { successChance: e.target.value as any }).then(loadRecords)}>
                     {['Low', 'Medium', 'High'].map(c => <option key={c} value={c} className="plasmo-bg-white plasmo-text-slate-900">{c}</option>)}
                 </select>
             )
         case 'status':
             return (
-                <select className="plasmo-w-full plasmo-text-[11px] plasmo-bg-white plasmo-border plasmo-border-slate-300 plasmo-rounded-lg plasmo-font-semibold plasmo-cursor-pointer plasmo-text-slate-900 focus:plasmo-border-slate-500 focus:plasmo-outline-none" defaultValue={record.status} onChange={(e) => updateCandidateRecord(record.id, { status: e.target.value as any })}>
-                    {['applied', 'interviewing', 'offered', 'rejected'].map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+                <select className="plasmo-w-full plasmo-text-[11px] plasmo-bg-white plasmo-border plasmo-border-slate-300 plasmo-rounded-lg plasmo-font-semibold plasmo-cursor-pointer plasmo-text-slate-900 focus:plasmo-border-slate-500 focus:plasmo-outline-none" defaultValue={record.status} onChange={(e) => updateCandidateRecord(record.id, { status: e.target.value as any }).then(loadRecords)}>
+                    {['applied', 'interviewing', 'offered', 'rejected', 'ghosted'].map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
                 </select>
             )
         case 'dateApplied':
             return (
                 <div className="plasmo-flex plasmo-items-center plasmo-space-x-2">
                     <input type="date" className="plasmo-flex-1 plasmo-text-[11px] plasmo-font-semibold plasmo-text-slate-900 plasmo-bg-transparent focus:plasmo-outline-none" defaultValue={record.dateApplied} onChange={(e) => updateCandidateRecord(record.id, { dateApplied: e.target.value }).then(loadRecords)} />
-                    {daysSince !== null && <span className="plasmo-text-[10px] plasmo-font-bold plasmo-text-slate-500">{daysSince}d</span>}
                 </div>
             )
         case 'pointOfContact':
             return (
-                <input className="plasmo-w-full plasmo-text-[11px] plasmo-font-semibold plasmo-text-slate-900 plasmo-bg-transparent focus:plasmo-outline-none" placeholder="Contact..." defaultValue={record.pointOfContact} onBlur={(e) => updateCandidateRecord(record.id, { pointOfContact: e.target.value })} />
+                <input className="plasmo-w-full plasmo-text-[11px] plasmo-font-semibold plasmo-text-slate-900 plasmo-bg-transparent focus:plasmo-outline-none" placeholder="Contact..." defaultValue={record.pointOfContact} onBlur={(e) => updateCandidateRecord(record.id, { pointOfContact: e.target.value }).then(loadRecords)} />
             )
         case 'referralDone':
             return (
                 <button onClick={() => updateCandidateRecord(record.id, { referralDone: !record.referralDone }).then(loadRecords)} className={`plasmo-px-3 plasmo-py-1 plasmo-rounded-lg plasmo-text-[10px] plasmo-font-bold plasmo-border ${record.referralDone ? 'plasmo-bg-slate-900 plasmo-text-white plasmo-border-slate-900' : 'plasmo-bg-white plasmo-text-slate-700 plasmo-border-slate-400 hover:plasmo-border-slate-500'}`}>{record.referralDone ? 'Yes' : 'No'}</button>
             )
+        case 'followUp':
+            return (
+                <div className="plasmo-flex plasmo-items-center plasmo-space-x-2">
+                    <span className={`plasmo-text-[10px] plasmo-font-bold ${isDue ? 'plasmo-text-rose-600 plasmo-animate-pulse' : 'plasmo-text-slate-500'}`}>
+                        {isDue ? 'Due!' : `${daysUntilFollowUp}d left`}
+                    </span>
+                </div>
+            )
         case 'jobDescription':
             return (
-                <textarea className="plasmo-w-full plasmo-text-[11px] plasmo-font-semibold plasmo-text-slate-900 plasmo-bg-transparent focus:plasmo-outline-none plasmo-resize-none plasmo-h-8" defaultValue={record.jobDescription} onBlur={(e) => updateCandidateRecord(record.id, { jobDescription: e.target.value })} />
+                <textarea className="plasmo-w-full plasmo-text-[11px] plasmo-font-semibold plasmo-text-slate-900 plasmo-bg-transparent focus:plasmo-outline-none plasmo-resize-none plasmo-h-8" defaultValue={record.jobDescription} onBlur={(e) => updateCandidateRecord(record.id, { jobDescription: e.target.value }).then(loadRecords)} />
             )
         case 'actions':
             return (
@@ -273,6 +307,17 @@ export const CandidateCRM = ({ isFullPage = false }: CandidateCRMProps) => {
             return null
     }
   }
+
+  const counts = useMemo(() => {
+    return {
+        pipeline: records.filter(r => r.status !== 'rejected' && r.status !== 'ghosted').length,
+        archives: records.filter(r => r.status === 'rejected' || r.status === 'ghosted').length,
+        due: records.filter(r => {
+            const days = getDaysBetween(today, r.followUpTargetDate)
+            return days !== null && days <= 0 && r.status !== 'rejected' && r.status !== 'ghosted'
+        }).length
+    }
+  }, [records, today])
 
   if (loading) return (
     <div className="plasmo-h-full plasmo-w-full plasmo-flex plasmo-items-center plasmo-justify-center plasmo-bg-white">
@@ -294,13 +339,21 @@ export const CandidateCRM = ({ isFullPage = false }: CandidateCRMProps) => {
             </div>
             <div className="plasmo-h-4 plasmo-w-[1px] plasmo-bg-slate-200"></div>
             <div className="plasmo-flex plasmo-bg-slate-50 plasmo-p-0.5 plasmo-rounded-lg plasmo-border plasmo-border-slate-100">
-                <button onClick={() => setActiveSubTab('grid')} className={`plasmo-text-[10px] plasmo-px-3 plasmo-py-1 plasmo-rounded-md plasmo-font-semibold plasmo-uppercase plasmo-tracking-wider plasmo-transition-all ${activeSubTab === 'grid' ? 'plasmo-bg-white plasmo-shadow-sm plasmo-text-slate-900' : 'plasmo-text-slate-400 hover:plasmo-text-slate-600'}`}>Pipeline</button>
+                <button onClick={() => setActiveSubTab('grid')} className={`plasmo-text-[10px] plasmo-px-3 plasmo-py-1 plasmo-rounded-md plasmo-font-semibold plasmo-uppercase plasmo-tracking-wider plasmo-transition-all plasmo-flex plasmo-items-center ${activeSubTab === 'grid' ? 'plasmo-bg-white plasmo-shadow-sm plasmo-text-slate-900' : 'plasmo-text-slate-400 hover:plasmo-text-slate-600'}`}>
+                    Pipeline
+                    <span className={`plasmo-ml-1.5 plasmo-px-1.5 plasmo-py-0.5 plasmo-rounded-md plasmo-text-[9px] ${activeSubTab === 'grid' ? 'plasmo-bg-slate-100 plasmo-text-slate-600' : 'plasmo-bg-slate-200/50 plasmo-text-slate-400'}`}>{counts.pipeline}</span>
+                    {counts.due > 0 && <span className="plasmo-ml-1 plasmo-w-4 plasmo-h-4 plasmo-bg-rose-500 plasmo-text-white plasmo-rounded-full plasmo-flex plasmo-items-center plasmo-justify-center plasmo-text-[8px]">{counts.due}</span>}
+                </button>
+                <button onClick={() => setActiveSubTab('archives')} className={`plasmo-text-[10px] plasmo-px-3 plasmo-py-1 plasmo-rounded-md plasmo-font-semibold plasmo-uppercase plasmo-tracking-wider plasmo-transition-all plasmo-flex plasmo-items-center ${activeSubTab === 'archives' ? 'plasmo-bg-white plasmo-shadow-sm plasmo-text-slate-900' : 'plasmo-text-slate-400 hover:plasmo-text-slate-600'}`}>
+                    Archives
+                    <span className={`plasmo-ml-1.5 plasmo-px-1.5 plasmo-py-0.5 plasmo-rounded-md plasmo-text-[9px] ${activeSubTab === 'archives' ? 'plasmo-bg-slate-100 plasmo-text-slate-600' : 'plasmo-bg-slate-200/50 plasmo-text-slate-400'}`}>{counts.archives}</span>
+                </button>
                 <button onClick={() => setActiveSubTab('add')} className={`plasmo-text-[10px] plasmo-px-3 plasmo-py-1 plasmo-rounded-md plasmo-font-semibold plasmo-uppercase plasmo-tracking-wider plasmo-transition-all ${activeSubTab === 'add' ? 'plasmo-bg-white plasmo-shadow-sm plasmo-text-slate-900' : 'plasmo-text-slate-400 hover:plasmo-text-slate-600'}`}>Add New</button>
             </div>
         </div>
 
         <div className="plasmo-flex plasmo-items-center plasmo-space-x-3">
-            {activeSubTab === 'grid' && (
+            {activeSubTab !== 'add' && (
                 <div className="plasmo-relative">
                     <input type="text" placeholder="Search..." className="plasmo-text-[11px] plasmo-px-3 plasmo-py-1.5 plasmo-bg-slate-50 plasmo-border-none plasmo-rounded-lg focus:plasmo-ring-1 focus:plasmo-ring-slate-200 plasmo-w-40 plasmo-text-slate-900" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
                 </div>
@@ -364,6 +417,10 @@ export const CandidateCRM = ({ isFullPage = false }: CandidateCRMProps) => {
                             <input type="date" className="plasmo-w-full plasmo-text-[12px] plasmo-px-4 plasmo-py-2.5 plasmo-bg-white plasmo-border plasmo-border-slate-300 plasmo-rounded-xl focus:plasmo-border-slate-400 focus:plasmo-outline-none" value={quickForm.dateApplied} onChange={(e) => setQuickForm({...quickForm, dateApplied: e.target.value})} />
                         </div>
                         <div className="plasmo-flex plasmo-flex-col">
+                            <label className="plasmo-text-[9px] plasmo-font-bold plasmo-text-slate-700 plasmo-uppercase plasmo-mb-1.5 plasmo-ml-1">Follow Up Date</label>
+                            <input type="date" className="plasmo-w-full plasmo-text-[12px] plasmo-px-4 plasmo-py-2.5 plasmo-bg-white plasmo-border plasmo-border-slate-300 plasmo-rounded-xl focus:plasmo-border-slate-400 focus:plasmo-outline-none" value={quickForm.followUpTargetDate} onChange={(e) => setQuickForm({...quickForm, followUpTargetDate: e.target.value})} />
+                        </div>
+                        <div className="plasmo-flex plasmo-flex-col">
                             <label className="plasmo-text-[9px] plasmo-font-bold plasmo-text-slate-700 plasmo-uppercase plasmo-mb-1.5 plasmo-ml-1">Point of Contact</label>
                             <input type="text" placeholder="e.g. Recruiter Name" className="plasmo-w-full plasmo-text-[12px] plasmo-px-4 plasmo-py-2.5 plasmo-bg-white plasmo-border plasmo-border-slate-300 plasmo-rounded-xl focus:plasmo-border-slate-400 focus:plasmo-outline-none" value={quickForm.pointOfContact} onChange={(e) => setQuickForm({...quickForm, pointOfContact: e.target.value})} />
                         </div>
@@ -413,16 +470,17 @@ export const CandidateCRM = ({ isFullPage = false }: CandidateCRMProps) => {
                                     <div className="plasmo-inline-flex plasmo-p-8 plasmo-rounded-3xl plasmo-bg-slate-50/50 plasmo-mb-4">
                                         <CapsuleLogo className="plasmo-w-10 plasmo-h-10 plasmo-text-slate-200" />
                                     </div>
-                                    <p className="plasmo-text-slate-400 plasmo-text-[13px] plasmo-font-medium">No candidates in pipeline yet.</p>
+                                    <p className="plasmo-text-slate-400 plasmo-text-[13px] plasmo-font-medium">No records here.</p>
                                 </td>
                             </tr>
                         ) : (
                             filteredRecords.map(record => {
                                 const isExpanded = expandedId === record.id
+                                const isArchived = record.status === 'rejected' || record.status === 'ghosted'
 
                                 return (
                                 <React.Fragment key={record.id}>
-                                    <tr className={`plasmo-group hover:plasmo-bg-slate-50/30 plasmo-transition-all ${record.followUpDates.includes(today) ? 'plasmo-bg-amber-50/30' : ''} ${isExpanded ? 'plasmo-bg-slate-50/80' : ''}`}>
+                                    <tr className={`plasmo-group hover:plasmo-bg-slate-50/30 plasmo-transition-all ${isExpanded ? 'plasmo-bg-slate-50/80' : ''}`}>
                                         {visibleColumns.map(colId => (
                                             <td key={colId} className="plasmo-px-3 plasmo-py-2 plasmo-border plasmo-border-slate-300">
                                                 {renderCell(record, colId)}
@@ -435,7 +493,7 @@ export const CandidateCRM = ({ isFullPage = false }: CandidateCRMProps) => {
                                                 <div className="plasmo-grid plasmo-grid-cols-1 md:plasmo-grid-cols-3 plasmo-gap-8 plasmo-bg-white plasmo-p-6 plasmo-rounded-3xl plasmo-border plasmo-border-slate-100 plasmo-shadow-sm">
                                                     <div className="plasmo-flex plasmo-flex-col">
                                                         <label className="plasmo-text-[10px] plasmo-font-bold plasmo-text-slate-700 plasmo-uppercase plasmo-mb-2">Job Description</label>
-                                                        <textarea className="plasmo-w-full plasmo-text-[12px] plasmo-font-medium plasmo-text-slate-900 plasmo-bg-slate-50 plasmo-p-4 plasmo-rounded-2xl plasmo-border plasmo-border-slate-300 plasmo-h-32 plasmo-resize-none focus:plasmo-ring-1 focus:plasmo-ring-slate-300 focus:plasmo-outline-none" defaultValue={record.jobDescription} onBlur={(e) => updateCandidateRecord(record.id, { jobDescription: e.target.value })} />
+                                                        <textarea className="plasmo-w-full plasmo-text-[12px] plasmo-font-medium plasmo-text-slate-900 plasmo-bg-slate-50 plasmo-p-4 plasmo-rounded-2xl plasmo-border plasmo-border-slate-300 plasmo-h-32 plasmo-resize-none focus:plasmo-ring-1 focus:plasmo-ring-slate-300 focus:plasmo-outline-none" defaultValue={record.jobDescription} onBlur={(e) => updateCandidateRecord(record.id, { jobDescription: e.target.value }).then(loadRecords)} />
                                                     </div>
                                                     <div className="plasmo-flex plasmo-flex-col plasmo-space-y-6">
                                                         <div>
@@ -444,17 +502,21 @@ export const CandidateCRM = ({ isFullPage = false }: CandidateCRMProps) => {
                                                         </div>
                                                         <div>
                                                             <label className="plasmo-text-[10px] plasmo-font-bold plasmo-text-slate-700 plasmo-uppercase plasmo-mb-2 plasmo-block">Point of Contact</label>
-                                                            <input className="plasmo-w-full plasmo-text-[12px] plasmo-font-medium plasmo-text-slate-900 plasmo-bg-slate-50 plasmo-px-4 plasmo-py-2.5 plasmo-rounded-xl plasmo-border plasmo-border-slate-300 focus:plasmo-ring-1 focus:plasmo-ring-slate-300 focus:plasmo-outline-none" placeholder="e.g. Hiring Manager" defaultValue={record.pointOfContact} onBlur={(e) => updateCandidateRecord(record.id, { pointOfContact: e.target.value })} />
+                                                            <input className="plasmo-w-full plasmo-text-[12px] plasmo-font-medium plasmo-text-slate-900 plasmo-bg-slate-50 plasmo-px-4 plasmo-py-2.5 plasmo-rounded-xl plasmo-border plasmo-border-slate-300 focus:plasmo-ring-1 focus:plasmo-ring-slate-300 focus:plasmo-outline-none" placeholder="e.g. Hiring Manager" defaultValue={record.pointOfContact} onBlur={(e) => updateCandidateRecord(record.id, { pointOfContact: e.target.value }).then(loadRecords)} />
                                                         </div>
                                                     </div>
                                                     <div className="plasmo-flex plasmo-flex-col plasmo-space-y-6">
-                                                        <div className="plasmo-flex plasmo-items-center plasmo-justify-between plasmo-bg-slate-50 plasmo-p-4 plasmo-rounded-2xl plasmo-border plasmo-border-slate-300">
-                                                            <span className="plasmo-text-[11px] plasmo-font-semibold plasmo-text-slate-600">Referral</span>
-                                                            <button onClick={() => updateCandidateRecord(record.id, { referralDone: !record.referralDone }).then(loadRecords)} className={`plasmo-px-4 plasmo-py-1.5 plasmo-rounded-xl plasmo-text-[10px] plasmo-font-bold ${record.referralDone ? 'plasmo-bg-slate-900 plasmo-text-white' : 'plasmo-bg-white plasmo-text-slate-700 plasmo-border plasmo-border-slate-400'}`}>{record.referralDone ? 'Obtained' : 'Pending'}</button>
+                                                        <div>
+                                                            <label className="plasmo-text-[10px] plasmo-font-bold plasmo-text-slate-700 plasmo-uppercase plasmo-mb-2 plasmo-block">{isArchived ? 'Archive Reason' : 'Follow Up'}</label>
+                                                            {isArchived ? (
+                                                                <input className="plasmo-w-full plasmo-text-[12px] plasmo-font-medium plasmo-text-slate-900 plasmo-bg-slate-50 plasmo-px-4 plasmo-py-2.5 plasmo-rounded-xl plasmo-border plasmo-border-slate-300 focus:plasmo-ring-1 focus:plasmo-ring-slate-300 focus:plasmo-outline-none" placeholder="Reason (Optional)" defaultValue={record.archiveReason} onBlur={(e) => updateCandidateRecord(record.id, { archiveReason: e.target.value }).then(loadRecords)} />
+                                                            ) : (
+                                                                <input type="date" className="plasmo-w-full plasmo-text-[12px] plasmo-font-medium plasmo-text-slate-900 plasmo-bg-slate-50 plasmo-px-4 plasmo-py-2.5 plasmo-rounded-xl plasmo-border plasmo-border-slate-300 focus:plasmo-ring-1 focus:plasmo-ring-slate-300 focus:plasmo-outline-none" defaultValue={record.followUpTargetDate} onChange={(e) => updateCandidateRecord(record.id, { followUpTargetDate: e.target.value }).then(loadRecords)} />
+                                                            )}
                                                         </div>
                                                         <div className="plasmo-flex plasmo-flex-col">
                                                             <label className="plasmo-text-[10px] plasmo-font-bold plasmo-text-slate-700 plasmo-uppercase plasmo-mb-2">Notes</label>
-                                                            <textarea className="plasmo-w-full plasmo-text-[11px] plasmo-font-medium plasmo-text-slate-900 plasmo-bg-slate-50 plasmo-p-4 plasmo-rounded-2xl plasmo-border plasmo-border-slate-300 plasmo-h-16 plasmo-resize-none focus:plasmo-ring-1 focus:plasmo-ring-slate-300 focus:plasmo-outline-none" placeholder="Add any extra notes..." defaultValue={record.notes} onBlur={(e) => updateCandidateRecord(record.id, { notes: e.target.value })} />
+                                                            <textarea className="plasmo-w-full plasmo-text-[11px] plasmo-font-medium plasmo-text-slate-900 plasmo-bg-slate-50 plasmo-p-4 plasmo-rounded-2xl plasmo-border plasmo-border-slate-300 plasmo-h-16 plasmo-resize-none focus:plasmo-ring-1 focus:plasmo-ring-slate-300 focus:plasmo-outline-none" placeholder="Add any extra notes..." defaultValue={record.notes} onBlur={(e) => updateCandidateRecord(record.id, { notes: e.target.value }).then(loadRecords)} />
                                                         </div>
                                                     </div>
                                                 </div>
